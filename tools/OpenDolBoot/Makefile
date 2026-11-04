@@ -37,13 +37,18 @@ else
 BIN2S_FLAGS	:= --apple-llvm
 endif
 
-#windows, msys, mingw,...
-ifeq ($(HOST), WIN32)
+#windows: mingw shells (Git Bash) build a native exe. msys and cygwin are posix and
+#take the default path; their gcc adds .exe itself
+ifneq ($(filter MINGW% WIN32,$(HOST)),)
 OUTPUT 		:=	$(TARGET).exe
 CFLAGS		+=	-DWIN32
 ifneq ($(MINGW_AVAIL),)
 PREFIX		:=	x86_64-w64-mingw32-
 CFLAGS		+=	-lws2_32
+else ifneq ($(shell command -v clang++),)
+#no mingw: LLVM's clang++, which links with the MSVC runtime
+CXX			=	clang++
+CFLAGS		:=	-Os -DWIN32 -D_CRT_SECURE_NO_WARNINGS -lws2_32
 endif
 endif
 

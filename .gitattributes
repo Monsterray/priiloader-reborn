@@ -1,0 +1,30 @@
+# Line endings: text is LF in the repository and in every checkout, on every
+# platform, whatever core.autocrlf says (Git for Windows sets it to true).
+* text=auto eol=lf
+
+# Windows batch files: LF in the repository like everything else, CRLF in
+# the checkout, because cmd.exe misreads labels and GOTO in LF batch files.
+*.bat text eol=crlf
+
+# Binary data.
+*.png binary
+*.jpg binary
+*.bin binary
+*.wad binary
+*.dol binary
+*.elf binary
+*.ttf binary
+*.wav binary
+*.zip binary
+*.7z binary
+*.gz binary
+*.pdf binary
+*.a binary
+*.o binary
+*.iso binary
+*.tpl binary
+*.psd binary
+*.tik binary
+*.tmd binary
+*.exe binary
+tools/dollz3 binary

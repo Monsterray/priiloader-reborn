@@ -25,7 +25,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <vector>
 
 #include "executables.h"
+extern "C" {
 #include "loader.bin.h"
+}
 
 #ifdef WIN32
 #include <windows.h>

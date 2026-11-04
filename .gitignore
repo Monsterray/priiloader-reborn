@@ -28,3 +28,19 @@
 
 #build folders
 build
+
+#wii keys and console data: never commit them
+/keys/*
+!/keys/.gitkeep
+*keys.bin
+otp.bin
+common-key
+sd-key
+*.pem
+
+#python and local settings
+.venv/
+.dev/
+.runs/
+__pycache__/
+*.pyc

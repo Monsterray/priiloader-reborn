@@ -23,7 +23,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdlib.h>
 #include <string>
 #include <vector>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <iostream>
 #include <string>
 #include <algorithm>
@@ -31,7 +33,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "../include/DolBinary.hpp"
 #include "../include/FileInfo.hpp"
 #include "../include/NandLoaderInjector.hpp"
+extern "C" {
 #include "../include/nandloader.bin.h"
+}
 
 const std::string internalFileName = "internal";
 
@@ -51,11 +55,11 @@ void ShowDolInformation(std::unique_ptr<DolBinary> &input)
 	printf("Entrypoint: 0x%08X\nBSS Address : 0x%08X\nBSS Size: 0x%08X\n\n", input->GetEntryPoint(), input->GetBSSAddress(), input->GetBSSSize());
 	printf("Text Sections:\n");
 	for (auto &section : input->TextSections)
-		printf("offset : 0x%08lX\taddress : 0x%08X\tsize : 0x%08X\n", section.Offset, section.Address, section.Size);
+		printf("offset : 0x%08zX\taddress : 0x%08X\tsize : 0x%08X\n", section.Offset, section.Address, section.Size);
 
 	printf("\nData Sections:\n");
 	for (auto &section : input->DataSections)
-		printf("offset : 0x%08lX\taddress : 0x%08X\tsize : 0x%08X\n", section.Offset, section.Address, section.Size);
+		printf("offset : 0x%08zX\taddress : 0x%08X\tsize : 0x%08X\n", section.Offset, section.Address, section.Size);
 }
 int main(int argc, char **argv)
 {

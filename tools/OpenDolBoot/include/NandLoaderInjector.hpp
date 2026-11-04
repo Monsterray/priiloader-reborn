@@ -21,7 +21,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #pragma once
 #include <string>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <memory>
 
 #include "FileInfo.hpp"

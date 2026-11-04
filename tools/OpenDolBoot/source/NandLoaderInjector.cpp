@@ -24,12 +24,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <string.h>
 #include <vector>
 #include <memory>
+#include <iterator>
 
 #include "../include/Common.hpp"
 #include "../include/NandLoaderInjector.hpp"
 #include "../include/NandLoader.h"
 #include "../include/DolBinary.hpp"
+extern "C" {
 #include "../include/nandloader.bin.h"
+}
 
 const std::string internalFileName = "internal";
 
@@ -112,7 +115,7 @@ void NandLoaderInjector::InjectNandLoader(unsigned int applicationVersion, std::
 	{
 		if (BigEndianToHost(loader->Entrypoint) != BigEndianToHost(inputHeader->entrypoint))
 		{
-			printf("different nboot to dol entrypoint detected! Changing\n\t0x%08X\tto\t0x%08X\n", ForceBigEndian(loader->Entrypoint), ForceBigEndian(inputHeader->entrypoint));
+			printf("different nboot to dol entrypoint detected! Changing\n\t0x%08X\tto\t0x%08X\n", (unsigned int)ForceBigEndian(loader->Entrypoint), (unsigned int)ForceBigEndian(inputHeader->entrypoint));
 			loader->Entrypoint = inputHeader->entrypoint;
 		}
 

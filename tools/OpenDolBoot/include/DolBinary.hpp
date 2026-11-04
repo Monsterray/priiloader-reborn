@@ -23,7 +23,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <cstddef>
 #include <string>
 #include <string.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 #include <vector>
 
 #include "Common.hpp"
@@ -46,7 +48,7 @@ typedef struct
 	int padding1[7];
 } dolHeader;
 
-static_assert(sizeof(dolHeader) == 0x100);
+static_assert(sizeof(dolHeader) == 0x100, "dolHeader must be 0x100 bytes");
 
 const unsigned int NandLoaderLocation = 0x80003400;
 
