@@ -46,10 +46,13 @@ s32 NandWrite(const std::string& destination, const void* data, u32 dataSize, Na
 	char pathArray[ISFS_MAXPATH] = {0};
 	sprintf(pathArray,"/tmp/%s", filename.c_str());
 	std::string tempDestinationPath = std::string(pathArray);
-	s32 fileDescriptor = 0;
+	//tmp is only the staging place within this run: IOS clears it at boot, so the lasting copies are the ones the installer keeps.
+	//IOS only renames a file to another directory, never to another name: the temp file carries the destination's file name
+	s32 fileDescriptor = -1;
 	s32 ret = 0;
 	std::string msg = "";
 	void* buffer = NULL;
+	bool keepTempFile = false;
 
 	try
 	{
@@ -72,41 +75,56 @@ s32 NandWrite(const std::string& destination, const void* data, u32 dataSize, Na
 		ret = ISFS_Open(tempDestinationPath.c_str(), ISFS_OPEN_RW);
 		if(ret < 0)
 			throw "Failed to open temp file " + tempDestinationPath;
-		
+
 		fileDescriptor = ret;
 		ret = ISFS_Write(fileDescriptor, data, dataSize);
 		ISFS_Close(fileDescriptor);
+		fileDescriptor = -1;
 		if (ret < 0)
 			throw "Failed to write temp file " + tempDestinationPath;
-		
+		if ((u32)ret != dataSize)
+		{
+			ret = NandActionErrors::SizeMismatch;
+			throw "Short write to temp file " + tempDestinationPath;
+		}
+
 		//write done. open file and calculate hash
 		STACK_ALIGN(fstats, fileStatus, 1, 32);
 		memset(fileStatus, 0, sizeof(fstats));
 		ret = ISFS_Open(tempDestinationPath.c_str(), ISFS_OPEN_READ);
 		if(ret < 0)
 			throw "Failed to reopen temp file " + tempDestinationPath;
-		
+
 		fileDescriptor = ret;
 		ret = ISFS_GetFileStats(fileDescriptor, fileStatus);
 		if (ret < 0)
 			throw "Failed to get stats of temp file " + tempDestinationPath;
 
 		if(fileStatus->file_length != dataSize)
+		{
+			ret = NandActionErrors::SizeMismatch;
 			throw "File size differs from input";
+		}
 
 		buffer = memalign(32, ALIGN32(dataSize));
 		if (buffer == NULL)
 		{
 			ret = NandActionErrors::MemoryAllocation;
-			throw "failed to allocate destination buffer";	
+			throw "failed to allocate destination buffer";
 		}
 
 		memset(buffer, 0, fileStatus->file_length);
 		ret = ISFS_Read(fileDescriptor, buffer, fileStatus->file_length);
 		if(ret < 0)
 			throw "Failed to read temp file";
-		
+		if((u32)ret != fileStatus->file_length)
+		{
+			ret = NandActionErrors::SizeMismatch;
+			throw "Short read of temp file " + tempDestinationPath;
+		}
+
 		ISFS_Close(fileDescriptor);
+		fileDescriptor = -1;
 		u32 destinationHash[5] ATTRIBUTE_ALIGN(32) = {0};
 		ret = SHA_Calculate(buffer, fileStatus->file_length, destinationHash);
 		if(ret < 0)
@@ -126,13 +144,19 @@ s32 NandWrite(const std::string& destination, const void* data, u32 dataSize, Na
 
 		gprintf("NandWrite : SHA1 hash success");
 
-		//the actual dangerous part
-		ISFS_Delete(destination.c_str());
+		//the actual dangerous part. IOS replaces an existing file on rename (atomic), so try that first.
+		//if this IOS refuses, fall back to upstream's delete + rename. from the delete on the temp file is the only good copy: keep it if the rename fails
 		ret = ISFS_Rename(tempDestinationPath.c_str(), destination.c_str());
 		if(ret < 0)
 		{
-			ret = NandActionErrors::RenameFailure;
-			throw "Failed to rename " + tempDestinationPath + " to " + destination;
+			ISFS_Delete(destination.c_str());
+			ret = ISFS_Rename(tempDestinationPath.c_str(), destination.c_str());
+			if(ret < 0)
+			{
+				keepTempFile = true;
+				ret = NandActionErrors::RenameFailure;
+				throw "Failed to rename " + tempDestinationPath + " to " + destination;
+			}
 		}
 		gprintf("NandWrite : %s written", destination.c_str());
 	}
@@ -148,12 +172,14 @@ s32 NandWrite(const std::string& destination, const void* data, u32 dataSize, Na
 	{
 		msg = "Unknown Error Occurred";
 	}
-	
+
 	//did an error occur
 	if(!msg.empty())
 	{
 		printf("\n\n%s\r\n", msg.c_str());
 		sleep(2);
+		if(ret >= 0)
+			ret = NandActionErrors::GeneralFailure;
 	}
 
 	if(buffer)
@@ -162,8 +188,14 @@ s32 NandWrite(const std::string& destination, const void* data, u32 dataSize, Na
 		buffer = NULL;
 	}
 
-	ISFS_Close(fileDescriptor);
-	ISFS_Delete(tempDestinationPath.c_str());
+	if(fileDescriptor >= 0)
+	{
+		ISFS_Close(fileDescriptor);
+		fileDescriptor = -1;
+	}
+
+	if(!keepTempFile)
+		ISFS_Delete(tempDestinationPath.c_str());
 	return ret;
 }
 
@@ -171,12 +203,12 @@ s32 NandCopy(const std::string& source, const std::string& destination, NandPerm
 {
 	if(source.empty() || destination.empty())
 		return NandActionErrors::InvalidArgument;
-	
+
 	std::string filename = destination.substr(destination.find_last_of("/\\") + 1);
 	if(filename.empty())
 		return NandActionErrors::InvalidArgument;
 
-	s32 fileDescriptor = 0;
+	s32 fileDescriptor = -1;
 	s32 ret = 0;
 	std::string msg = "";
 	void* buffer = NULL;
@@ -198,16 +230,22 @@ s32 NandCopy(const std::string& source, const std::string& destination, NandPerm
 		if (buffer == NULL)
 		{
 			ret = NandActionErrors::MemoryAllocation;
-			throw "failed to allocate source buffer";	
+			throw "failed to allocate source buffer";
 		}
 
 		memset(buffer, 0, fileStatus->file_length);
 		ret = ISFS_Read(fileDescriptor, buffer, fileStatus->file_length);
 		if (ret < 0)
 			throw "Failed to Read Data from " + source;
+		if ((u32)ret != fileStatus->file_length)
+		{
+			ret = NandActionErrors::SizeMismatch;
+			throw "Short read of " + source;
+		}
 
 		ISFS_Close(fileDescriptor);
-		ret = NandWrite(destination, buffer, fileStatus->file_length, srcPermissions);		
+		fileDescriptor = -1;
+		ret = NandWrite(destination, buffer, fileStatus->file_length, srcPermissions);
 	}
 	catch (const std::string& ex)
 	{
@@ -221,13 +259,15 @@ s32 NandCopy(const std::string& source, const std::string& destination, NandPerm
 	{
 		msg = "Unknown Error Occurred";
 	}
-	
+
 	//did an error occur
 	if(!msg.empty())
 	{
 		gprintf("NandCopy error : %s", msg.c_str());
 		printf("\n\n%s\r\n", msg.c_str());
 		sleep(2);
+		if(ret >= 0)
+			ret = NandActionErrors::GeneralFailure;
 	}
 
 	if(buffer)
@@ -235,6 +275,11 @@ s32 NandCopy(const std::string& source, const std::string& destination, NandPerm
 		free(buffer);
 		buffer = NULL;
 	}
-	ISFS_Close(fileDescriptor);
+
+	if(fileDescriptor >= 0)
+	{
+		ISFS_Close(fileDescriptor);
+		fileDescriptor = -1;
+	}
 	return ret;
 }

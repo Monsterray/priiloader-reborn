@@ -83,6 +83,9 @@ typedef void (*apploader_entry)(apploader_init* init, apploader_main* main, appl
 
 s32 DVDInit(void);
 s32 DVDAsyncBusy( void );
+//waits for the async request to finish, for at most timeout_ms. returns -1 on a timeout
+s32 DVDWaitAsync(u32 timeout_ms);
+#define DVD_WAIT_TIMEOUT_MS 15000
 void DVDCloseHandle(void);
 s32 DVDDiscAvailable( void );
 s32 DVDStopDrive( void );

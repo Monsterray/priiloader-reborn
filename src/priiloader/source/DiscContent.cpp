@@ -355,7 +355,7 @@ void LaunchWiiDisc(void)
 	mem_free(partitionsInfo);
 	mem_free(tmd_buf);
 
-	while (DVDAsyncBusy());
+	DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
 	DVDCloseHandle();
 }
 

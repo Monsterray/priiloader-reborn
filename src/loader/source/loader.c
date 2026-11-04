@@ -61,6 +61,9 @@ void _boot (_LDR_PARAMETERS)
 			asm("isync");
 			//jump to entrypoint
 			((void (*)())(ep))();		
+			//the binary returned. falling through would treat the argv struct as offset patches (parameterCount is 1 with arguments),
+			//and there is nothing left to return to, so stop here
+			while(1);
 		}
 		case BINARY_TYPE_SYSTEM_MENU_VWII:
 		case BINARY_TYPE_SYSTEM_MENU:
@@ -225,7 +228,7 @@ u32 _loadApplication(u8* binary, struct __argv* args)
 		ElfHdr->e_ident[EI_MAG2] == 'L' &&
 		ElfHdr->e_ident[EI_MAG3] == 'F' )
 	{
-		if( (ElfHdr->e_entry | 0x80000000) < 0x80003400 && (ElfHdr->e_entry | 0x80000000) >= MAX_ADDRESS )
+		if( (ElfHdr->e_entry | 0x80000000) < 0x80003400 || (ElfHdr->e_entry | 0x80000000) >= MAX_ADDRESS )
 			return 0;
 
 		entrypoint = _loadElf(ElfHdr, binary);

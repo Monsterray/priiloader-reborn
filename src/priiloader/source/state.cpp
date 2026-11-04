@@ -93,6 +93,8 @@ s32 ClearState( void )
 s32 SetBootState( u8 type , u8 flags , u8 returnto , u8 discstate )
 {
 	StateFlags *sf = static_cast<StateFlags *>(mem_align( 32, sizeof(StateFlags) ));
+	if(sf == NULL)
+		return -5;
 	memset( sf, 0, sizeof(StateFlags) );
 
 	s32 fd = ISFS_Open(_statePath, ISFS_OPEN_RW );
@@ -139,6 +141,8 @@ s8 VerifyNandBootInfo ( void )
 {
 	// path : /shared2/sys/NANDBOOTINFO
 	NANDBootInfo *Boot_Info = static_cast<NANDBootInfo *>(mem_align( 32, sizeof(NANDBootInfo) ));
+	if(Boot_Info == NULL)
+		return -3;
 	memset( Boot_Info, 0, sizeof(NANDBootInfo) );
 
 	s32 fd = ISFS_Open("/shared2/sys/NANDBOOTINFO", ISFS_OPEN_READ );

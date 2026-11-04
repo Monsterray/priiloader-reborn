@@ -378,6 +378,9 @@ void BootMainSysMenu( void )
 
 		gprintf("loading hacks");
 		LoadSystemHacks(StorageDevice::NAND);
+		//the loops below index states_hash by hack. never trust that the load left them the same size
+		if(states_hash.size() != system_hacks.size())
+			states_hash.assign(system_hacks.size(), 0);
 
 		Input_Shutdown(false);
 		ShutdownMounts();

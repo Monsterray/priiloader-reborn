@@ -639,7 +639,7 @@ void TitleInformation::LaunchTitle()
 		ShutdownMounts();
 
 		gdprintf("waiting for drive to stop...");
-		while(DVDAsyncBusy());
+		DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
 		if(system_state.Init)
 		{
 			VIDEO_SetBlack(true);
@@ -723,7 +723,7 @@ void TitleInformation::LaunchTitle()
 		gprintf("LaunchTitle (%s) General Exception", GetTitleLongString(_titleId).c_str());
 	}
 
-	while(DVDAsyncBusy());
+	DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
 }
 
 s32 LoadListTitles( void )

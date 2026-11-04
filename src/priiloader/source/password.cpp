@@ -34,6 +34,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "Input.h"
 #include "Video.h"
 #include "mount.h"
+#include "password_file.h"
 
 bool check_pass( const char* pass )
 {
@@ -41,7 +42,7 @@ bool check_pass( const char* pass )
 	const char lettera[] = "abcdefghijklmnopqrstuvwxyz0123456789";
 	int len = strlen(pass);
 	int i = 1;
-	char pass2[len];
+	char pass2[len+1];
 	sprintf(pass2, "%s", pass);
 	const char* pch = strpbrk(letter, pass);
 	while (pch != NULL)
@@ -64,11 +65,8 @@ bool check_pass( const char* pass )
 void InstallPassword( void )
 {
 	char *pbuf=NULL;
-	unsigned int psize;
-	char *ptr;
 	char* password = NULL;
 	char* file = NULL;
-	char tfile[200];
 	int redraw = 1;
 	FILE* in = NULL;
 	if (!GetMountedFlags() )
@@ -87,47 +85,11 @@ void InstallPassword( void )
 		{
 			password = NULL;
 			file = NULL;
-			s32 pfd=0;
-			pfd = ISFS_Open("/title/00000001/00000002/data/password.txt", 1 );
-			if( pfd < 0 )
+			mem_free( pbuf );
+			if( ReadPasswordFile( &pbuf, &password, &file ) == PASSWORD_FILE_NOMEM )
 			{
-				gprintf("InstallPassword: ISFS_Open(password.txt) failure. error %d\r\n",pfd);
-			}
-			else
-			{
-				fstats *pstatus = static_cast<fstats *>(mem_align( 32, sizeof( fstats ) ));
-				ISFS_GetFileStats( pfd, pstatus);
-				psize = pstatus->file_length;
-				mem_free( pstatus );
-				mem_free( pbuf );
-				pbuf = static_cast<char*>(mem_align( 32, ALIGN32(psize) ));
-				if( pbuf == NULL )
-				{
-					error = ERROR_MALLOC;
-					return;
-				}
-				memset( pbuf, 0, psize );
-				ISFS_Read( pfd, pbuf, psize );
-				ISFS_Close( pfd );
-
-				pbuf[psize] = 0;
-				char se[5];
-				if( strpbrk(pbuf , "\r\n") )
-					sprintf(se, "\r\n");
-				else
-					sprintf(se, "\n");
-
-				ptr = strtok(pbuf, se);
-				while (ptr != NULL)
-				{
-					if(file == NULL && password != NULL)
-						file = ptr;
-					if(password == NULL)
-						password = ptr;
-					ptr = strtok (NULL, se);
-					if(file != NULL && password != NULL)
-						break;
-				}
+				error = ERROR_MALLOC;
+				return;
 			}
 
 			if(password == NULL)
@@ -149,14 +111,16 @@ void InstallPassword( void )
 			else
 			{
 				PrintFormat( 0, 16, 48, "File:     %s", file);
-				sprintf(tfile, "/%s", file);
-				in = fopen(BuildPath(tfile).c_str(), "rb");
+				std::string tfile = std::string("/") + file;
+				in = fopen(BuildPath(tfile.c_str()).c_str(), "rb");
 			}
 			if( in )
+			{
 				PrintFormat( 1, (rmode->viWidth-48)>>1, 48, "OK");
+				fclose(in);
+			}
 			else
 				PrintFormat( 0, (rmode->viWidth-48)>>1, 48, "--");
-			fclose(in);
 
 			PrintFormat( 0, ((rmode->viWidth /2)-((strlen("A(A) Install file"))*13/2))>>1, rmode->viHeight-64, "A(A) Install File");
 			PrintFormat( 0, ((rmode->viWidth /2)-((strlen("2(X) Delete File "))*13/2))>>1, rmode->viHeight-48, "2(X) Delete File");
@@ -183,20 +147,38 @@ void InstallPassword( void )
 			{
 				PrintFormat( 1, ((rmode->viWidth /2)-((strlen("Couldn't open \"password.txt\" for reading!"))*13/2))>>1, 208, "Couldn't open \"password.txt\" for reading!");
 				sleep(5);
+				mem_free( pbuf );
 				return;
 			}
 			PrintFormat( 0, ((rmode->viWidth /2)-((strlen("Install \"password.txt\"..."))*13/2))>>1, 208, "Install \"password.txt\"...");
 
 			//get size
 			fseek( passtxt, 0, SEEK_END );
-			unsigned int size = ftell( passtxt );
+			long passsize = ftell( passtxt );
 			fseek( passtxt, 0, 0 );
 
-			char *buf = static_cast<char*>(mem_align( 32, sizeof( char ) * size ));
-			memset( buf, 0, sizeof( char ) * size );
+			unsigned int size = passsize > 0 ? passsize : 0;
+			char *buf = static_cast<char*>(mem_align( 32, size + 1 ));
+			if( buf == NULL )
+			{
+				fclose( passtxt );
+				error = ERROR_MALLOC;
+				mem_free( pbuf );
+				return;
+			}
+			memset( buf, 0, size + 1 );
 
-			fread( buf, sizeof( char ), size, passtxt );
+			size_t readsize = fread( buf, sizeof( char ), size, passtxt );
 			fclose( passtxt );
+			if( readsize != size )
+			{
+				//never replace the installed password with a half read file
+				PrintFormat( 1, ((rmode->viWidth /2)-((strlen("Reading \"password.txt\" failed!"))*13/2))>>1, 208, "Reading \"password.txt\" failed!");
+				sleep(5);
+				mem_free( buf );
+				mem_free( pbuf );
+				return;
+			}
 
 			//Check if there is already a password installed
 			s32 fd = ISFS_Open("/title/00000001/00000002/data/password.txt", 1|2 );
@@ -221,7 +203,10 @@ void InstallPassword( void )
 			sleep(5);
 			ClearScreen();
 			ISFS_Close( fd );
+			mem_free( buf );
 			mem_free( pbuf );
+			password = NULL;
+			file = NULL;
 			redraw = 1;
 		}
 
@@ -264,49 +249,14 @@ void password_check( void )
 {
 	InitMounts();
 	char *cpbuf = NULL;
-	char * ptr;
 	char* password = NULL;
 	char* file = NULL;
 
-	s32 cpfd = 0;
-	cpfd = ISFS_Open("/title/00000001/00000002/data/password.txt", 1 );
-	if( cpfd < 0 )
-	{
-		gprintf("password_check: ISFS_Open(password.txt) failure. error %d\r\n",cpfd);
-		return;
-	}
-	fstats *cpstatus = static_cast<fstats *>(mem_align( 32, sizeof( fstats ) ));
-	if(cpstatus == NULL)
-	{
+	int result = ReadPasswordFile(&cpbuf, &password, &file);
+	if(result == PASSWORD_FILE_NOMEM)
 		error = ERROR_MALLOC;
+	if(result != PASSWORD_FILE_OK)
 		return;
-	}
-	ISFS_GetFileStats( cpfd, cpstatus);
-	mem_free( cpstatus );
-
-	cpbuf = static_cast<char*>(mem_align( 32, ALIGN32(cpstatus->file_length+1) ));
-	if( cpbuf == NULL )
-	{
-		error = ERROR_MALLOC;
-		return;
-	}
-	memset( cpbuf, 0, cpstatus->file_length );
-	ISFS_Read( cpfd, cpbuf, cpstatus->file_length );
-	ISFS_Close( cpfd );
-
-	char se[5] = {0};
-	sprintf(se, (strpbrk(cpbuf , "\r\n") != NULL) ? "\r\n" : "\n");
-	ptr = strtok(cpbuf, se);
-	while (ptr != NULL)
-	{
-		if(file == NULL && password != NULL)
-			file = ptr;
-		if(password == NULL)
-			password = ptr;
-		ptr = strtok (NULL, se);
-		if(file != NULL && password != NULL)
-			break;
-	}
 
 	if(password == NULL)
 	{
@@ -321,8 +271,10 @@ void password_check( void )
 	//chars for password
 	char letter[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 	char lettera[] = "abcdefghijklmnopqrstuvwxyz0123456789";
-	int char_status[len];
-	char words[len];
+	//the BackDoor password is 8 long, which can be more than the password in the file
+	const int max_len = (len > 8) ? len : 8;
+	int char_status[max_len + 1];
+	char words[max_len + 1];
 	words[len] = 0;
 	memset(words, '-', len);
 	int count = 0;

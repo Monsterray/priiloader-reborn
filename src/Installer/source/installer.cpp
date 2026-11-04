@@ -60,6 +60,72 @@ static signed_blob *_nandloaderTmdBlob = (signed_blob *)_nandloaderTmdBuffer;
 static tmd *_nandloaderTmd = NULL;
 static const u64 _nandloaderTitleId = 0x0000000100000200ll;
 
+static bool NandFileExists(const char* path)
+{
+	s32 fd = ISFS_Open(path, ISFS_OPEN_READ);
+	if(fd < 0)
+		return false;
+
+	ISFS_Close(fd);
+	return true;
+}
+
+static NandPermissions GetTmdPermissions(void)
+{
+	NandPermissions filePermissions = { 0 };
+	s32 ret = ISFS_GetAttr(_tmdPath, &filePermissions.owner, &filePermissions.group, &filePermissions.attributes, &filePermissions.ownerperm, &filePermissions.groupperm, &filePermissions.otherperm);
+	if(ret < 0 )
+	{
+		//attribute getting failed. returning to default
+		printf("\x1b[%d;%dm", 33, 1);
+		printf("\nWARNING : failed to get file's permissions. using defaults\r\n");
+		printf("\x1b[%d;%dm", 37, 1);
+		gprintf("permission failure on desination! error %d", ret);
+		gprintf("writing with max permissions");
+		filePermissions = {
+			.ownerperm = 3,
+			.groupperm = 3,
+			.otherperm = 0
+		};
+	}
+
+	gprintf("ret %d owner %d group %d attributes %X perm:%X-%X-%X", ret, filePermissions.owner, filePermissions.group, filePermissions.attributes, filePermissions.ownerperm, filePermissions.groupperm, filePermissions.otherperm);
+	return filePermissions;
+}
+
+//puts the original System Menu back (boot content and, if asked, its TMD). returns true only if everything that
+//had to be restored was restored. the callers delete their backups only when this returns true.
+static bool RestoreSystemMenu(const NandPermissions& appPermissions, bool restoreTmd)
+{
+	bool restored = true;
+	if(NandCopy(_copyBootAppPath, _originalBootAppPath, appPermissions) < 0)
+	{
+		restored = false;
+		printf("\x1b[%d;%dm", 33, 1);
+		printf("\nUNABLE TO RESTORE THE SYSTEM MENU APP!!!\nTHE BACKUP (%s) WAS KEPT.\r\n", _copyBootAppPath);
+		printf("\x1b[%d;%dm", 37, 1);
+	}
+
+	if(restoreTmd && NandFileExists(_tmdBackupPath))
+	{
+		if(NandCopy(_tmdBackupPath, _tmdPath, GetTmdPermissions()) < 0)
+		{
+			restored = false;
+			printf("\x1b[%d;%dm", 33, 1);
+			printf("\nUNABLE TO RESTORE THE SYSTEM MENU TMD!!!\nTHE BACKUP (%s) WAS KEPT.\r\n", _tmdBackupPath);
+			printf("\x1b[%d;%dm", 37, 1);
+		}
+	}
+
+	if(!restored)
+	{
+		printf("\x1b[%d;%dm", 33, 1);
+		printf("THIS COULD BRICK THE WII SO PLEASE REINSTALL SYSTEM MENU\nWHEN RETURNING TO THE HOMEBREW CHANNEL!!!\r\n\r\n");
+		printf("\x1b[%d;%dm", 37, 1);
+	}
+	return restored;
+}
+
 s32 DeletePriiloaderFile(const std::string& pathFormat, const std::string& fileDescription)
 {
 	char file_path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = {0};
@@ -155,8 +221,12 @@ bool PriiloaderInstalled(void)
 	printf("Checking for Priiloader...\r\n");
 	gprintf("Checking for SystemMenu Dol");
 	s32 fd = ISFS_Open(_copyBootAppPath, ISFS_OPEN_RW);
-	if (fd < 0)
+	if (fd == -106) //ISFS_ENOENT: the copy does not exist, Priiloader is not installed
 		return false;
+
+	//any other error is not an answer: reading it as "not installed" would turn an update into an install over the vanilla copy
+	if (fd < 0)
+		throw "Unable to check for the System Menu copy. error " + std::to_string(fd);
 
 	ISFS_Close(fd);
 	return true;
@@ -224,6 +294,12 @@ void InitializeInstaller(u64 titleId, bool isvWii)
 	if (fileId == 0)
 		throw "Unable to retrieve title booting app";
 
+	//guards against a TMD whose boot entry carries the 2XXXXXXX prefix: the System Menu's file is the one with the
+	//original id, and using the prefixed id would make an update write the nandloader over Priiloader.
+	//(a real vWii update keeps the boot entry as is and puts Priiloader in content 1, so this normally does nothing)
+	if (_isvWii && (fileId >> 28) == 2)
+		fileId &= 0x0FFFFFFF;
+
 	memset(_originalBootAppPath, 0, ISFS_MAXPATH);
 	memset(_copyBootAppPath, 0, ISFS_MAXPATH);
 	sprintf(_originalBootAppPath, _titleAppFormat, TITLE_UPPER(_targetTitleId), TITLE_LOWER(_targetTitleId), fileId);
@@ -248,7 +324,8 @@ void InitializeInstaller(u64 titleId, bool isvWii)
 			throw "Unable to get stored nandloader tmd";
 
 		_nandloaderTmd = reinterpret_cast<tmd*>(SIGNATURE_PAYLOAD(_nandloaderTmdBlob));
-		for(u8 i=0; i < _nandloaderTmd->num_contents; ++i)
+		fileId = 0; //still holds the SM's id here, so the check below would never fire
+		for(u16 i=0; i < _nandloaderTmd->num_contents; ++i)
 		{
 			if (_nandloaderTmd->contents[i].index == _nandloaderTmd->boot_index)
 			{
@@ -286,16 +363,9 @@ s32 RemovePriiloader(void)
 		if(ret < 0)
 			throw "Failed to restore System Menu";
 
-		ISFS_Delete(_copyBootAppPath);
 		printf("Done!\r\n");
-
-		if (_isvWii)
-		{
-			// Delete the actual Priiloader content on vWii
-			printf("Deleting Priiloader app...");
-			ISFS_Delete(_vwiiAdditionalApp);
-			printf("Done!\r\n");
-		}
+		//the System Menu copy (and on vWii the Priiloader content) stay until PatchTMD restored the TMD: if that fails,
+		//the TMD still wants Priiloader's hash and the copy is what the Wii can be repaired from
 	}
 	catch (const std::string& ex)
 	{
@@ -312,10 +382,27 @@ s32 RemovePriiloader(void)
 
 	if(!errorMsg.empty())
 	{
-		ISFS_CreateFile(_originalBootAppPath, 0, 3, 3, 3);
-		s32 fd = ISFS_Open(_originalBootAppPath, ISFS_OPEN_RW);
-		ISFS_Write(fd, priiloader_app, priiloader_app_size);
-		ISFS_Close(fd);
+		//the restore failed. if the boot content is gone put back what the TMD still holds the hash of:
+		//Priiloader, or BC-NAND on vWii.
+		//the System Menu copy is kept either way.
+		if(!NandFileExists(_originalBootAppPath))
+		{
+			NandPermissions appPermissions = {
+				.ownerperm = 3,
+				.groupperm = 3,
+				.otherperm = 3,
+			};
+			//on vWii the TMD's boot content hash is BC-NAND's; elsewhere it is Priiloader's
+			s32 putBack = _isvWii
+				? NandCopy(_nandloaderAppPath, _originalBootAppPath, appPermissions)
+				: NandWrite(_originalBootAppPath, priiloader_app, priiloader_app_size, appPermissions);
+			if(putBack < 0)
+			{
+				printf("\x1b[%d;%dm", 33, 1);
+				printf("\nUNABLE TO PUT BACK THE BOOT CONTENT!!!\nTHE SYSTEM MENU COPY (%s) WAS KEPT.\r\n", _copyBootAppPath);
+				printf("\x1b[%d;%dm", 37, 1);
+			}
+		}
 		throw errorMsg;
 	}
 
@@ -355,37 +442,92 @@ s32 WritePriiloader(InstallerAction action)
 
 	if (_isvWii)
 	{
-		// Write priiloader to an additional content file for vWii (2XXXXXXX.app)
-		ret = NandWrite(_vwiiAdditionalApp, priiloader_app, priiloader_app_size, appPermissions);
-		if (ret < 0)
+		// The additional content (2XXXXXXX.app) holds Priiloader, the boot content becomes BC-NAND.
+		// On an install the additional content goes first: if it fails nothing was touched. On an update the TMD
+		// already holds the hash of the old additional content, so it is written last, right before PatchTMD:
+		// a failure of the nandloader copy then leaves the old content and TMD in step.
+		for(int step = 0; step < 2; step++)
 		{
-			ISFS_Delete(_vwiiAdditionalApp);
-			throw "Unable to write Priiloader app. error " + std::to_string(ret);
-		}
-		
-		gprintf("Priiloader app written.");
-		printf("Done!\r\n");
+			bool writeApp = (step == 0) == (action == Install);
+			if(writeApp)
+			{
+				ret = NandWrite(_vwiiAdditionalApp, priiloader_app, priiloader_app_size, appPermissions);
+				if (ret < 0)
+				{
+					//the boot content was not touched yet (install) or is already BC-NAND (update): the update leaves
+					//the old additional content in place, so only a fresh install removes anything.
+					if(action == Install && RestoreSystemMenu(appPermissions, false))
+					{
+						ISFS_Delete(_vwiiAdditionalApp);
+						ISFS_Delete(_copyBootAppPath);
+					}
+					throw "Unable to write Priiloader app. error " + std::to_string(ret);
+				}
 
-		// On vWii we replace the SM boot content with BC-NAND
-		printf("Replacing System Menu app...");
-		ret = NandCopy(_nandloaderAppPath, _originalBootAppPath, appPermissions);
-		if (ret < 0)
-		{
-			try{NandCopy(_copyBootAppPath, _originalBootAppPath, appPermissions);}catch(...){}
-			throw "Unable to replace the system menu. error " + std::to_string(ret) + ", changes reverted.";
+				gprintf("Priiloader app written.");
+				printf("Done!\r\n");
+				continue;
+			}
+
+			// On vWii we replace the SM boot content with BC-NAND
+			printf("Replacing System Menu app...");
+			ret = NandCopy(_nandloaderAppPath, _originalBootAppPath, appPermissions);
+			if (ret < 0 && action == Update && !NandFileExists(_originalBootAppPath))
+			{
+				//the boot content is gone: try once more before falling back to the original System Menu
+				ret = NandCopy(_nandloaderAppPath, _originalBootAppPath, appPermissions);
+			}
+
+			if (ret < 0)
+			{
+				bool restored = false;
+				if(action == Install)
+				{
+					restored = RestoreSystemMenu(appPermissions, false);
+					if(restored)
+					{
+						ISFS_Delete(_vwiiAdditionalApp);
+						ISFS_Delete(_copyBootAppPath);
+					}
+				}
+				else if(!NandFileExists(_originalBootAppPath))
+					restored = RestoreSystemMenu(appPermissions, true); //TMD too: it points to the additional content
+				else
+					restored = true; //the old boot content is still there
+
+				throw "Unable to replace the system menu. error " + std::to_string(ret) + (restored ? ", changes reverted." : ", RESTORE FAILED, the backup was kept.");
+			}
+
+			gprintf("System Menu replaced.");
+			printf("Done!\r\n");
 		}
-		
-		gprintf("System Menu replaced.");
-		printf("Done!\r\n");
 	}
 	else
 	{
 		ret = NandWrite(_originalBootAppPath, priiloader_app, priiloader_app_size, appPermissions);
+		if(ret < 0 && action == Update && !NandFileExists(_originalBootAppPath))
+		{
+			//the boot content is gone: try once more before falling back to the original System Menu
+			ret = NandWrite(_originalBootAppPath, priiloader_app, priiloader_app_size, appPermissions);
+		}
+
 		if(ret < 0)
 		{
-			try{NandCopy(_copyBootAppPath, _originalBootAppPath, appPermissions);}catch(...){}
-			ISFS_Delete(_copyBootAppPath);
-			throw "Failed to write Priiloader : error " + std::to_string(ret);
+			//the System Menu copy is only deleted after a verified restore on a fresh install. on an update it is the only
+			//real System Menu, and the TMD holds Priiloader's hash: if the boot content is gone, restore the TMD too.
+			bool restored = false;
+			if(action == Install)
+			{
+				restored = RestoreSystemMenu(appPermissions, false);
+				if(restored)
+					ISFS_Delete(_copyBootAppPath);
+			}
+			else if(!NandFileExists(_originalBootAppPath))
+				restored = RestoreSystemMenu(appPermissions, true);
+			else
+				restored = true; //the old Priiloader is still there
+
+			throw "Failed to write Priiloader : error " + std::to_string(ret) + (restored ? "" : ", RESTORE FAILED, the backup was kept.");
 		}
 	}
 
@@ -430,34 +572,37 @@ s32 CopyTicket(void)
 	return 1;
 }
 
+//Remove: the System Menu copy and on vWii the Priiloader content go only once the TMD is back to the original
+static void DeleteRemovedSystemMenuCopies(void)
+{
+	ISFS_Delete(_copyBootAppPath);
+	if(_isvWii)
+	{
+		printf("Deleting Priiloader app...");
+		ISFS_Delete(_vwiiAdditionalApp);
+		printf("Done!\r\n");
+	}
+}
+
 s32 PatchTMD( InstallerAction action )
 {
-	NandPermissions filePermissions = { 0 };
-	s32 ret = ISFS_GetAttr(_tmdPath, &filePermissions.owner, &filePermissions.group, &filePermissions.attributes, &filePermissions.ownerperm, &filePermissions.groupperm, &filePermissions.otherperm);
-	if(ret < 0 )
-	{
-		//attribute getting failed. returning to default
-		printf("\x1b[%d;%dm", 33, 1);
-		printf("\nWARNING : failed to get file's permissions. using defaults\r\n");
-		printf("\x1b[%d;%dm", 37, 1);
-		gprintf("permission failure on desination! error %d", ret);
-		gprintf("writing with max permissions");
-		filePermissions = {
-			.ownerperm = 3,
-			.groupperm = 3,
-			.otherperm = 0
-		};
-	}
-
-	gprintf("ret %d owner %d group %d attributes %X perm:%X-%X-%X", ret, filePermissions.owner, filePermissions.group, filePermissions.attributes, filePermissions.ownerperm, filePermissions.groupperm, filePermissions.otherperm);
+	NandPermissions filePermissions = GetTmdPermissions();
+	s32 ret = 0;
 
 	s32 fd = ISFS_Open(_tmdBackupPath, ISFS_OPEN_READ);
+	bool backupFound = fd >= 0;
+	bool backupSuspect = false; //the backup is there but not trustworthy: never restore from it
 	if(fd < 0 && action == InstallerAction::Remove)
 	{
 		printf("TMD backup not found. leaving TMD alone...\r\n");
+		DeleteRemovedSystemMenuCopies();
 		return 1;
 	}
-	ISFS_Close(fd);
+	if(fd >= 0)
+	{
+		ISFS_Close(fd);
+		fd = -1;
+	}
 
 	switch(action)
 	{
@@ -470,6 +615,7 @@ s32 PatchTMD( InstallerAction action )
 			if ( ret >= 0)
 			{
 				ISFS_Delete(_tmdBackupPath);
+				DeleteRemovedSystemMenuCopies();
 				return 1;
 			}
 			else
@@ -492,8 +638,8 @@ s32 PatchTMD( InstallerAction action )
 	std::string errorMsg = "";
 	try
 	{
-		bool createBackup = fd < 0;
-		
+		bool createBackup = !backupFound;
+
 		//read tmd
 		ret = ISFS_Open(_tmdPath, ISFS_OPEN_READ);
 		if (ret < 0)
@@ -504,32 +650,52 @@ s32 PatchTMD( InstallerAction action )
 		ret = ISFS_GetFileStats(fd, fileStatus);
 		if (ret < 0)
 			throw "failed to get TMD information";
-		
+
+		//room is needed for the content vWii adds
+		if(fileStatus->file_length < 1 || fileStatus->file_length + sizeof(tmd_content) > MAX_SIGNED_TMD_SIZE)
+			throw "TMD has an invalid size";
+
 		memset(_tmdBuffer, 0, MAX_SIGNED_TMD_SIZE);
 		_tmdSize = fileStatus->file_length;
 		ret = ISFS_Read(fd, _tmdBuffer, _tmdSize);
 		if(ret < 0)
 			throw "Failed to read TMD data";
-		
+		if((u32)ret != _tmdSize)
+			throw "Short read of TMD data";
+
 		ISFS_Close(fd);
+		fd = -1;
 
 		//read tmd backup, if it exists ofcourse
 		backupTmdBuffer = memalign(32, MAX_SIGNED_TMD_SIZE);
 		if(backupTmdBuffer == NULL)
 			throw "Failed to allocate backup TMD buffer";
 		
+		memset(backupTmdBuffer, 0, MAX_SIGNED_TMD_SIZE);
 		fd = ISFS_Open(_tmdBackupPath, ISFS_OPEN_READ);
 		if(fd >= 0)
 		{
 			ret = ISFS_GetFileStats(fd, fileStatus);
 			if (ret < 0)
 				throw "failed to get TMD backup information";
-			
+
+			if(fileStatus->file_length < 1 || fileStatus->file_length > MAX_SIGNED_TMD_SIZE)
+			{
+				backupSuspect = true;
+				throw "TMD backup has an invalid size";
+			}
+
 			ret = ISFS_Read(fd, backupTmdBuffer, fileStatus->file_length);
 			if(ret < 0)
 				throw "Failed to read TMD Backup data";
+			if((u32)ret != fileStatus->file_length)
+			{
+				backupSuspect = true;
+				throw "Short read of TMD Backup data";
+			}
 
 			ISFS_Close(fd);
+			fd = -1;
 		}
 
 		signed_blob * backupTmdBlob = static_cast<signed_blob *>(backupTmdBuffer);
@@ -538,8 +704,7 @@ s32 PatchTMD( InstallerAction action )
 		if(createBackup || backupTmd->title_version != _smTmd->title_version)
 		{
 			gprintf("Making tmd backup...");
-			ISFS_Delete(_tmdBackupPath);
-			ret = NandWrite(_tmdBackupPath, _tmdBuffer, _tmdSize, filePermissions);
+			ret = NandWrite(_tmdBackupPath, _tmdBuffer, _tmdSize, filePermissions); //replaces an old backup in place
 			if(ret < 0)
 				throw "Failed to make TMD Backup";
 		}
@@ -566,7 +731,10 @@ s32 PatchTMD( InstallerAction action )
 			ret = ISFS_GetFileStats(fd, fileStatus);
 			if(ret < 0)
 				throw "Failed to get original app stats";
-			
+
+			if(fileStatus->file_length < 1)
+				throw "Original app is empty";
+
 			applicationBuffer = memalign(32, ALIGN32(fileStatus->file_length));
 			if(applicationBuffer == NULL)
 				throw "Failed to allocate memory for original app";
@@ -574,8 +742,11 @@ s32 PatchTMD( InstallerAction action )
 			ret = ISFS_Read(fd, applicationBuffer, fileStatus->file_length);
 			if(ret < 0)
 				throw "Failed to read original app";
+			if((u32)ret != fileStatus->file_length)
+				throw "Short read of original app";
 
 			ISFS_Close(fd);
+			fd = -1;
 
 			//Get Hashes and do some changes
 			ret = SHA_Calculate(applicationBuffer, fileStatus->file_length, appHash);
@@ -683,9 +854,12 @@ s32 PatchTMD( InstallerAction action )
 		errorMsg = "Unknown Error Occurred";
 	}
 
-	if(fd)
+	if(fd >= 0)
+	{
 		ISFS_Close(fd);
-	
+		fd = -1;
+	}
+
 	if(applicationBuffer)
 	{
 		free(applicationBuffer);
@@ -703,14 +877,34 @@ s32 PatchTMD( InstallerAction action )
 		printf("\x1b[%d;%dm", 33, 1);
 		printf("UNABLE TO PATCH THE SYSTEM MENU TMD!!!\n\nTHIS COULD BRICK THE WII SO PLEASE REINSTALL SYSTEM MENU (v%d)\nWHEN RETURNING TO THE HOMEBREW CHANNEL!!!\n\r\n", _smTmd->title_version);
 		printf("\x1b[%d;%dm", 37, 1);
-		fd = ISFS_Open(_tmdBackupPath, ISFS_OPEN_RW);
-		if(fd >= 0)
+
+		//the boot content is already Priiloader's, so the original System Menu must come back as a whole: its app and
+		//its TMD. the backups (TMD backup, System Menu copy) are deleted only after both were restored.
+		NandPermissions appPermissions = {
+			.ownerperm = 3,
+			.groupperm = 3,
+			.otherperm = 3,
+		};
+		bool restored = false;
+		if(backupSuspect)
 		{
-			//the backup is there. as safety lets copy it back.
-			ISFS_Close(fd);
-			try{ NandCopy(_tmdBackupPath, _tmdPath, filePermissions); } catch(...) {}
+			printf("\x1b[%d;%dm", 33, 1);
+			printf("THE TMD BACKUP (%s) IS NOT USABLE AND WAS KEPT.\r\n", _tmdBackupPath);
+			printf("\x1b[%d;%dm", 37, 1);
 		}
-		ISFS_Delete(_tmdBackupPath);
+		else
+			restored = RestoreSystemMenu(appPermissions, true);
+
+		if(restored)
+		{
+			ISFS_Delete(_tmdBackupPath);
+			if(action == InstallerAction::Install)
+			{
+				if(_isvWii)
+					ISFS_Delete(_vwiiAdditionalApp);
+				ISFS_Delete(_copyBootAppPath);
+			}
+		}
 		throw errorMsg;
 	}
 

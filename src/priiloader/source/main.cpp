@@ -67,6 +67,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "titles.hpp"
 #include "DiscContent.h"
 #include "mem2_manager.h"
+#include "nfo.h"
 #include "HomebrewChannel.h"
 #include "IOS.hpp"
 #include "mount.h"
@@ -1080,7 +1081,7 @@ s8 BootDolFromMem(void* binary , u8 HW_AHBPROT_ENABLED, struct __argv *args )
 		if(DVDAsyncBusy())
 		{
 			gprintf("checking DVD drive...");
-			while(DVDAsyncBusy());
+			DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
 		}
 		DVDCloseHandle();
 
@@ -1197,11 +1198,7 @@ s8 BootDolFromFile( const char* Dir , u8 HW_AHBPROT_ENABLED,const std::vector<st
 		//calculate the char lenght of the arguments
 		args->length = _path.size() +1;
 		//loading args
-		for(u32 i = 0; i < args_list.size(); i++)
-		{
-			if(args_list[i].size() > 0)
-				args->length += strnlen(args_list[i].c_str(),128)+1;
-		}
+		args->length += NfoArgumentsLength(args_list);
 
 		//allocate memory for the arguments
 		args->commandLine = static_cast<char*>(mem_malloc(args->length));
@@ -1213,23 +1210,15 @@ s8 BootDolFromFile( const char* Dir , u8 HW_AHBPROT_ENABLED,const std::vector<st
 		else
 		{
 			//assign arguments and the rest
-			strcpy(&args->commandLine[0], _path.c_str());
+			memcpy(&args->commandLine[0], _path.c_str(), _path.size() +1);
 
 			//add the other arguments
 			args->argc = 1;
 
 			if(args_list.size() > 0)
 			{
-				u32 pos = _path.size() +1;
-				for(u32 i = 0; i < args_list.size(); i++)
-				{
-					if(args_list[i].size() > 0)
-					{
-						strcpy(&args->commandLine[pos], args_list[i].c_str());
-						pos += strlen(args_list[i].c_str())+1;
-					}
-				}
-				args->argc += args_list.size();
+				NfoFillArguments(&args->commandLine[_path.size() +1], args_list);
+				args->argc += NfoArgumentCount(args_list);
 			}
 			
 			args->commandLine[args->length - 1] = '\0';
@@ -1242,16 +1231,22 @@ s8 BootDolFromFile( const char* Dir , u8 HW_AHBPROT_ENABLED,const std::vector<st
 			throw "failed to open file";
 
 		fseek( dol, 0, SEEK_END );
-		u32 size = ftell(dol);
+		long dol_size = ftell(dol);
 		fseek( dol, 0, 0);
+		if(dol_size <= 0)
+			throw "failed to get the size of the file";
+		u32 size = dol_size;
 
 		binary = static_cast<u8*>(mem_align( 32, ALIGN32(size) ));
 		if(!binary)
 			throw "failed to alloc the binary";
 
 		memset( binary, 0, size );
-		fread( binary, sizeof( u8 ), size, dol );
+		size_t read_size = fread( binary, sizeof( u8 ), size, dol );
 		fclose(dol);
+		dol = NULL;
+		if(read_size != size)
+			throw "failed to read the file";
 
 		BootDolFromMem(binary, HW_AHBPROT_ENABLED, args);
 		//we didn't boot, that ain't good
@@ -1587,15 +1582,17 @@ void InstallLoadDOL( void )
 
 			//get size
 			fseek( dol, 0, SEEK_END );
-			unsigned int size = ftell( dol );
+			long dol_size = ftell( dol );
 			fseek( dol, 0, 0 );
 
-			char *buf = static_cast<char*>(mem_align( 32, ALIGN32(sizeof( char ) * size) ));
+			unsigned int size = dol_size > 0 ? dol_size : 0;
+			char *buf = (size > 0) ? static_cast<char*>(mem_align( 32, ALIGN32(sizeof( char ) * size) )) : NULL;
+			if(buf != NULL && fread( buf, sizeof( char ), size, dol ) != size)
+			{
+				mem_free(buf);
+			}
 			if(buf != NULL)
 			{
-				memset( buf, 0, sizeof( char ) * size );
-
-				fread( buf, sizeof( char ), size, dol );
 				fclose( dol );
 
 				//Check if there is already a main.dol installed
@@ -1621,29 +1618,20 @@ void InstallLoadDOL( void )
 					ISFS_Close( fd );
 					mem_free( buf );
 					//dol is saved. lets save the extra info now
+					//the old main.nfo belongs to the previous binary : remove it even if we don't write a new one
+					ISFS_Delete(ARGUMENT_NAND_PATH);
 					STACK_ALIGN(_dol_settings, dol_settings, 1, 32);
 					memset(dol_settings,0,sizeof(_dol_settings));
 					dol_settings->HW_AHBPROT_bit = app_list[cur_off].HW_AHBPROT_ENABLED;
-					dol_settings->argument_count = app_list[cur_off].args.size();
-					for(u32 i = 0;i < app_list[cur_off].args.size();i++)
-					{
-						if(app_list[cur_off].args[i].size() > 0)
-							dol_settings->arg_cli_length += strnlen(app_list[cur_off].args[i].c_str(),128)+1;
-					}
-					dol_settings->arg_cli_length += 1;
+					dol_settings->argument_count = NfoArgumentCount(app_list[cur_off].args);
+					dol_settings->arg_cli_length = NfoArgumentsLength(app_list[cur_off].args) + 1;
 
-					dol_settings->arg_command_line = static_cast<char*>(mem_align(32,dol_settings->arg_cli_length+1));
+					//autoboot refuses an argument block that is too long, so we don't write one
+					dol_settings->arg_command_line = (dol_settings->arg_cli_length <= NFO_MAX_ARG_LENGTH) ? static_cast<char*>(mem_align(32,dol_settings->arg_cli_length+1)) : NULL;
 					if(dol_settings->arg_command_line != NULL)
 					{
-						u32 pos = 0;
-						for(u32 i = 0; i < app_list[cur_off].args.size(); i++)
-						{
-							if(app_list[cur_off].args[i].size() > 0)
-							{
-								strcpy(&dol_settings->arg_command_line[pos], app_list[cur_off].args[i].c_str());
-								pos += strlen(app_list[cur_off].args[i].c_str())+1;
-							}
-						}
+						memset(dol_settings->arg_command_line, 0, dol_settings->arg_cli_length+1);
+						NfoFillArguments(dol_settings->arg_command_line, app_list[cur_off].args);
 						dol_settings->arg_command_line[dol_settings->arg_cli_length -1] = 0x00;
 						fd = ISFS_Open(ARGUMENT_NAND_PATH, 1|2 );
 						if( fd >= 0 )	//delete old file
@@ -1661,6 +1649,7 @@ void InstallLoadDOL( void )
 					if( fd < 0 )
 					{
 						PrintFormat( 1, TEXT_OFFSET("Writing nfo failed!"), 272, "Writing nfo failed!");
+						mem_free(dol_settings->arg_command_line);
 					}
 					else
 					{
@@ -1678,6 +1667,7 @@ void InstallLoadDOL( void )
 			}
 			else
 			{
+				fclose( dol );
 				PrintFormat( 1, TEXT_OFFSET("Writing file failed!"), 240, "Writing file failed!");
 			}
 			sleep(5);
@@ -1786,113 +1776,139 @@ void InstallLoadDOL( void )
 }
 void AutoBootDol( void )
 {
-	s32 fd = 0;
+	s32 fd = -1;
 	u8* binary = NULL;
+	u8* arguments = NULL;
+	s8 ahbprot = 0;
 	struct __argv *argv = NULL;
 	try
 	{
-		STACK_ALIGN(_dol_settings, dol_settings, 1, 32);
-		memset(dol_settings,0,sizeof(_dol_settings));
+		STACK_ALIGN(u8, header, 32, 32);
+		memset(header,0,32);
 		STACK_ALIGN(fstats, status, 1, 32);
 		memset(status,0,sizeof(fstats));
 
+		//main.nfo is optional. a damaged one is ignored and the binary starts without arguments, as upstream did
+		u8 error_before_nfo = error;
 		try
 		{
 			fd = ISFS_Open(ARGUMENT_NAND_PATH, ISFS_OPEN_READ );
-			if(fd < 0)
-				throw "failed to open argument file";
-
-			if (ISFS_GetFileStats(fd,status) < 0 || status->file_length < sizeof(_dol_settings) - sizeof(dol_settings->arg_command_line))
-				throw "failed to get argument file info or file too small";
-
-			//read the argument count,AHBPROT bit and arg lenght
-			s32 ret = ISFS_Read( fd, dol_settings, status->file_length);
-			if( ret < (s32)status->file_length)
-				throw ("failed to read arguments file(" + std::to_string(ret) + ")");
-
-			if(dol_settings->HW_AHBPROT_bit != 1 && dol_settings->HW_AHBPROT_bit != 0 )
+			if(fd >= 0)
 			{
+				if (ISFS_GetFileStats(fd,status) < 0 || status->file_length < NFO_HEADER_SIZE)
+				{
+					error = ERROR_BOOT_DOL_READ;
+					throw "failed to get argument file info or file too small";
+				}
+
+				//read only the header : the AHBPROT bit, argument count and argument length
+				s32 ret = ISFS_Read( fd, header, NFO_HEADER_SIZE);
+				if( ret < NFO_HEADER_SIZE)
+				{
+					error = ERROR_BOOT_DOL_READ;
+					throw ("failed to read arguments file(" + std::to_string(ret) + ")");
+				}
+
+				u8 argument_count = 0;
+				s32 arg_cli_length = 0;
+				int parsed = NfoParseHeader(header, status->file_length, &ahbprot, &argument_count, &arg_cli_length);
+				if(parsed == NFO_BAD_AHBPROT)
+				{
+					ISFS_Close(fd);
+					fd = -1;
+					ISFS_Delete(ARGUMENT_NAND_PATH);
+					error = ERROR_BOOT_DOL_READ;
+					throw "invalid HW_AHBPROT bit";
+				}
+				if(parsed != NFO_OK)
+				{
+					error = ERROR_BOOT_DOL_READ;
+					throw "invalid argument length";
+				}
+
+				argv = reinterpret_cast<__argv*>(mem_align(32,sizeof(__argv)));
+				if(!argv)
+				{
+					error = ERROR_MALLOC;
+					throw "failed to allocate memory for the arguments";
+				}
+				memset(argv,0,sizeof(__argv));
+
+				argv->argvMagic = 0;
+				argv->commandLine = NULL;
+				argv->argc = 0;
+				argv->argv = &argv->commandLine;
+				argv->endARGV = argv->argv + 1;
+				argv->length = strnlen(BINARY_NAND_PATH,48)+1 + arg_cli_length;
+
+				argv->commandLine = static_cast<char*>(mem_align(32,argv->length));
+				if(!argv->commandLine)
+				{
+					error = ERROR_MALLOC;
+					throw "failed to alloc memory for cli";
+				}
+				memset(argv->commandLine,0,argv->length);
+
+				strncpy(argv->commandLine,BINARY_NAND_PATH,argv->length-1);
+				argv->argc = 1;
+
+				if(argument_count > 0)
+				{
+					//the arguments are on the heap : their length is only known at runtime and the stack is small
+					arguments = static_cast<u8*>(mem_align(32,arg_cli_length));
+					if(!arguments)
+					{
+						error = ERROR_MALLOC;
+						throw "failed to alloc memory for the arguments";
+					}
+					memset(arguments,0,arg_cli_length);
+					ISFS_Seek(fd, NFO_HEADER_SIZE, SEEK_SET);
+					if( ISFS_Read( fd, arguments, arg_cli_length ) < arg_cli_length)
+					{
+						error = ERROR_BOOT_DOL_READ;
+						throw "failed to read arguments";
+					}
+
+					memcpy(argv->commandLine+strnlen(BINARY_NAND_PATH,48)+1,arguments,arg_cli_length);
+					argv->argc += argument_count;
+				}
 				ISFS_Close(fd);
-				ISFS_Delete(ARGUMENT_NAND_PATH);
-				throw "invalid HW_AHBPROT bit";
-			}
+				fd = -1;
 
-			argv = reinterpret_cast<__argv*>(mem_align(32,sizeof(__argv)));
-			if(!argv)
+				//to make sure there is no overflow
+				argv->commandLine[argv->length-1] = '\0';
+				argv->argv = &argv->commandLine;
+				argv->endARGV = argv->argv + 1;
+				argv->argvMagic = ARGV_MAGIC; //everything is set so the magic is set so it becomes valid
+			}
+			else
 			{
-				error = ERROR_MALLOC;
-				throw "failed to allocate memory for the arguments";
+				gprintf("AutoBootDol : no argument file (%d)",fd);
+				fd = -1;
 			}
-			memset(argv,0,sizeof(__argv));
-
-			argv->argvMagic = 0;
-			argv->commandLine = NULL;
-			argv->argc = 0;
-			argv->argv = &argv->commandLine;
-			argv->endARGV = argv->argv + 1;
-			argv->length = strnlen(BINARY_NAND_PATH,48)+1;
-
-			if(dol_settings->argument_count > 0)
-			{
-				argv->length += dol_settings->arg_cli_length;
-			}
-
-			argv->commandLine = static_cast<char*>(mem_align(32,argv->length));
-			if(!argv->commandLine)
-				throw "failed to alloc memory for cli";
-			
-			memset(argv->commandLine,0,argv->length);
-
-			strncpy(argv->commandLine,BINARY_NAND_PATH,argv->length-1);
-			argv->argc = 1;
-
-			if(dol_settings->argument_count > 0)
-			{
-				STACK_ALIGN(char, arguments, dol_settings->arg_cli_length, 32);
-				memset(arguments,0,dol_settings->arg_cli_length);
-				ISFS_Seek(fd , ((u32)&dol_settings->arg_command_line) - (u32)(dol_settings) ,SEEK_SET);
-				if( ISFS_Read( fd, arguments, dol_settings->arg_cli_length ) < dol_settings->arg_cli_length)
-					throw "failed to read arguments";
-				ISFS_Close(fd);
-
-				memcpy(argv->commandLine+strnlen(BINARY_NAND_PATH,48)+1,arguments,dol_settings->arg_cli_length);
-				argv->argc += dol_settings->argument_count;
-			}
-			//to make sure there is no overflow
-			argv->commandLine[argv->length-1] = '\0';
-			argv->argv = &argv->commandLine;
-			argv->endARGV = argv->argv + 1;
-			argv->argvMagic = ARGV_MAGIC; //everything is set so the magic is set so it becomes valid
 		}
 		catch (const std::string& ex)
 		{
-			gprintf("AutoBootDol Exception -> %s",ex.c_str());
-			memset(dol_settings,0,sizeof(_dol_settings));
+			gprintf("AutoBootDol : ignoring main.nfo -> %s",ex.c_str());
 		}
 		catch (char const* ex)
 		{
-			gprintf("AutoBootDol Exception -> %s",ex);
-			memset(dol_settings,0,sizeof(_dol_settings));
+			gprintf("AutoBootDol : ignoring main.nfo -> %s",ex);
 		}
-		catch(...)
+		if(argv == NULL || argv->argvMagic != ARGV_MAGIC)
 		{
-			gprintf("AutoBootDol Exception was thrown");
-			memset(dol_settings,0,sizeof(_dol_settings));
-		}
-
-		if(fd > 0)
-		{
-			ISFS_Close(fd);
-			fd = 0;
-		}
-
-		if(argv != NULL && argv->argvMagic != ARGV_MAGIC)
-		{
-			if(argv->commandLine != NULL)
+			//no valid arguments : start without them and with AHBPROT off
+			error = error_before_nfo;
+			ahbprot = 0;
+			if(fd >= 0)
+				ISFS_Close(fd);
+			fd = -1;
+			if(arguments)
+				mem_free(arguments);
+			if(argv != NULL && argv->commandLine != NULL)
 				mem_free(argv->commandLine);
-
-			//something went wrong, so undo everything
-			mem_free(argv);
+			if(argv)
+				mem_free(argv);
 		}
 
 		//read the binary
@@ -1923,9 +1939,10 @@ void AutoBootDol( void )
 			throw "failed to read binary";
 		}
 		ISFS_Close(fd);
+		fd = -1;
 
 		//load it!
-		BootDolFromMem(binary,dol_settings->HW_AHBPROT_bit,argv);
+		BootDolFromMem(binary,ahbprot,argv);
 	}
 	catch (const std::string& ex)
 	{
@@ -1942,11 +1959,13 @@ void AutoBootDol( void )
 
 	if(binary)
 		mem_free(binary);
+	if(arguments)
+		mem_free(arguments);
 	if(argv != NULL && argv->commandLine != NULL)
 		mem_free(argv->commandLine);
 	if(argv)
 		mem_free(argv);
-	if(fd > 0)
+	if(fd >= 0)
 		ISFS_Close(fd);
 
 	return;
@@ -2543,7 +2562,7 @@ int main(int argc, char **argv)
 					Input_Shutdown(true);
 					USB_Deinitialize();
 					*(reinterpret_cast<vu32*>(0xCD8000C0)) &= ~0x20;
-					while(DVDAsyncBusy());
+					DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
 					DVDCloseHandle();
 					if( SGetSetting(SETTING_IGNORESHUTDOWNMODE) )
 						STM_ShutdownToStandby();

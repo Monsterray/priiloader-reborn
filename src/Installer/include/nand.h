@@ -30,6 +30,8 @@ enum NandActionErrors
 	HashCalculation = -82,
 	HashComparison = -83,
 	RenameFailure = -84,
+	SizeMismatch = -85,
+	GeneralFailure = -86,
 };
 
 typedef struct

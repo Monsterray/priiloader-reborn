@@ -87,6 +87,7 @@ bool GetLine(bool reading_nand, std::string& line, u32 fileSize)
 		if (reading_nand)
 		{	
 			STACK_ALIGN(fstats, status, 1, 32);
+			memset(status, 0, sizeof(fstats));
 			ISFS_GetFileStats(nand_file_handler, status);
 			file_pos = status->file_pos;
 		}
@@ -113,17 +114,20 @@ bool GetLine(bool reading_nand, std::string& line, u32 fileSize)
 			)
 		{	
 			//are we dealing with a potential overflow?
-			if (read_cnt > max_size)
+			if (read_cnt >= max_size)
 				throw "line to long";
 
-			u32 addr = read_cnt + (u32)buf;
+			char* addr = buf + read_cnt;
 			u32 len = (file_pos+BLOCK_SIZE < fileSize) ? BLOCK_SIZE : fileSize-(file_pos+read_cnt);
+			//never read past the buffer, whatever is in the file (a NUL stops strstr, so the newline checks can't be relied on)
+			if (len > max_size - read_cnt)
+				len = max_size - read_cnt;
 			s32 ret = 0;
 
 			if (reading_nand)
-				ret = ISFS_Read(nand_file_handler, reinterpret_cast<void*>(addr), len );
+				ret = ISFS_Read(nand_file_handler, addr, len );
 			else
-				ret = fread( reinterpret_cast<void*>(addr), sizeof( char ), len, fat_file_handler );
+				ret = fread( addr, sizeof( char ), len, fat_file_handler );
 
 			if(ret <= 0)
 			{
@@ -135,7 +139,7 @@ bool GetLine(bool reading_nand, std::string& line, u32 fileSize)
 
 			//flush memory so we are not hitting cache with the read data
 			//we do +1 so any null terminator is also flushed
-			DCFlushRange(reinterpret_cast<void*>(addr), ALIGN32(ret+1));
+			DCFlushRange(addr, ALIGN32(ret+1));
 			read_cnt += ret;
 
 			if(strnlen(buf,max_size+1) >= max_size)
@@ -161,9 +165,9 @@ bool GetLine(bool reading_nand, std::string& line, u32 fileSize)
 		file_pos += cut_string.size()+1;
 
 		//cut off any carriage returns
-		if(cut_string.back() == '\r')
+		if(cut_string.size() > 0 && cut_string.back() == '\r')
 			cut_string.pop_back();
-		if(cut_string.front() == '\r')
+		if(cut_string.size() > 0 && cut_string.front() == '\r')
 			cut_string.erase(0, 1);
 
 		line = cut_string;
@@ -185,7 +189,7 @@ bool GetLine(bool reading_nand, std::string& line, u32 fileSize)
 	}
 	catch (const std::string& ex)
 	{
-		gprintf("GetLine Exception : %s",ex);
+		gprintf("GetLine Exception : %s",ex.c_str());
 	}
 	catch(...)
 	{	
@@ -399,7 +403,24 @@ bool _addOrRejectHack(system_hack& hack)
 		return false;
 	}
 }
+static s8 _loadSystemHacks(StorageDevice source);
 s8 LoadSystemHacks(StorageDevice source)
+{
+	s8 ret = _loadSystemHacks(source);
+
+	//callers index states_hash with the index of a hack. whatever way the load ended, there is one state per hack
+	states_hash.resize(system_hacks.size(), 0);
+
+	//the early returns leave the states file open
+	if (nand_file_handler >= 0)
+	{
+		ISFS_Close(nand_file_handler);
+		nand_file_handler = -1;
+	}
+	return ret;
+}
+
+static s8 _loadSystemHacks(StorageDevice source)
 {
 	//system_hacks already loaded
 	if (system_hacks.size() || states_hash.size()) 
@@ -422,6 +443,7 @@ s8 LoadSystemHacks(StorageDevice source)
 
 	//read the hacks file size
 	STACK_ALIGN(fstats, status, 1, 32);
+	memset(status, 0, sizeof(fstats));
 	u32 fileSize = 0;
 	switch(source)
 	{
@@ -459,7 +481,8 @@ s8 LoadSystemHacks(StorageDevice source)
 
 		if (source == StorageDevice::NAND)
 		{
-			ISFS_Close(nand_file_handler);
+			if (nand_file_handler >= 0)
+				ISFS_Close(nand_file_handler);
 			nand_file_handler = -1;
 		}			
 		else
@@ -533,6 +556,7 @@ s8 LoadSystemHacks(StorageDevice source)
 		if(ISFS_GetFileStats( nand_file_handler, status)<0)
 		{
 			ISFS_Close( nand_file_handler );
+			nand_file_handler = -1;
 			return 0;
 		}
 
@@ -544,6 +568,7 @@ s8 LoadSystemHacks(StorageDevice source)
 			{
 				error = ERROR_MALLOC;
 				ISFS_Close( nand_file_handler );
+				nand_file_handler = -1;
 				return 0;
 			}
 			memset( fbuf, 0, status->file_length );
@@ -551,6 +576,7 @@ s8 LoadSystemHacks(StorageDevice source)
 			if(ISFS_Read( nand_file_handler, fbuf, status->file_length )< (s32)status->file_length )
 			{
 				ISFS_Close( nand_file_handler );
+				nand_file_handler = -1;
 				mem_free(fbuf);
 				return 0;
 			}

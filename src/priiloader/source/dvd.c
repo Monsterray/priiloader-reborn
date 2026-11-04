@@ -26,6 +26,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdarg.h>
 #include <unistd.h>
 #include <ogc/ipc.h>
+#include <ogc/lwp_watchdog.h>
 #include "mem2_manager.h"
 #include "dvd.h"
 #include "gecko.h"
@@ -38,7 +39,8 @@ typedef struct _di_iovector
 u32 _di_lasterror[0x08] [[gnu::aligned(32)]];
 
 s32 di_fd = -1;
-s8 async_called = 0;
+//set by the IOS callback : volatile so the wait loops read it again each time
+volatile s8 async_called = 0;
 ioctlv iovectors[8] [[gnu::aligned(64)]] = { 0 };
 u32 cmd[8] [[gnu::aligned(64)]] = { 0 };
 
@@ -66,6 +68,22 @@ s32 DVDInit(void)
 inline s32 DVDAsyncBusy(void)
 {
 	return async_called;
+}
+
+s32 DVDWaitAsync(u32 timeout_ms)
+{
+	u64 deadline = gettime() + millisecs_to_ticks(timeout_ms);
+	while (DVDAsyncBusy())
+	{
+		if (gettime() > deadline)
+		{
+			//the drive never answered. forget the request so nothing waits for it again
+			async_called = 0;
+			return -1;
+		}
+		usleep(1000);
+	}
+	return 0;
 }
 
 void DVDCloseHandle(void)
@@ -227,7 +245,7 @@ s32 DVDExecuteVCommand(s32 command, bool do_async, s32 cnt_in, s32 cnt_io, const
 	if (di_fd < 0)
 		DVDInit();
 
-	if (!di_fd)
+	if (di_fd < 0)
 		return -2;
 
 	if (cmd_input_size > 0x1C) //di command is 0x20, -4 for the command = 0x1C
@@ -256,7 +274,12 @@ s32 DVDExecuteVCommand(s32 command, bool do_async, s32 cnt_in, s32 cnt_io, const
 	else
 	{
 		async_called = 1;
-		IOS_IoctlvAsync(di_fd, command, cnt_in, cnt_io, iovectors, callback, userdata);
+		if (IOS_IoctlvAsync(di_fd, command, cnt_in, cnt_io, iovectors, callback, userdata) < 0)
+		{
+			//nothing was sent, so no callback will ever clear the flag
+			async_called = 0;
+			return -4;
+		}
 	}
 
 	return 1;
@@ -273,7 +296,7 @@ s32 DVDExecuteCommand(u32 command, u8 do_async, const void* input, s32 input_siz
 	if (di_fd < 0)
 		DVDInit();
 
-	if (!di_fd)
+	if (di_fd < 0)
 		return -3;
 
 	if (output_size > 0 && output == NULL)
@@ -296,7 +319,12 @@ s32 DVDExecuteCommand(u32 command, u8 do_async, const void* input, s32 input_siz
 	else
 	{
 		async_called = 1;
-		IOS_IoctlAsync(di_fd, command, cmd, sizeof(cmd), output, output_size, callback, NULL);
+		if (IOS_IoctlAsync(di_fd, command, cmd, sizeof(cmd), output, output_size, callback, NULL) < 0)
+		{
+			//nothing was sent, so no callback will ever clear the flag
+			async_called = 0;
+			return -4;
+		}
 	}
 
 	return 1;
