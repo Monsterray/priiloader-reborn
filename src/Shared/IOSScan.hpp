@@ -29,11 +29,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 //The pattern scan of PatchIOS, with no hardware in it so the host tests can run it.
 //PatchT has a std::vector<u8> Pattern and a Patch(u8* address) member; this is IosPatch (IOS.hpp).
-//Scans [begin, end) once. At each address the first patch whose pattern matches there is applied
-//(a pattern is never read past end). Stops as soon as every patch has been applied at least once;
-//a patch that matches again before that is applied again. A patch with an empty pattern is never
-//applied and does not hold the scan up. onApplied(address, patternSize) runs after each applied patch.
-//Returns how many times a patch was applied.
+//Scans [begin, end) once. At each address the first patch not yet applied whose pattern matches there
+//is applied (a pattern is never read past end). Each patch is applied once at most, at its first match,
+//and the scan stops when every patch has been applied. A patch that never matches makes the scan read to
+//end, but writes nothing more: before, a patch set that can't all match on one IOS (FakeSign and
+//FakeSignOld) wrote every later match of the others across all of IOS's memory. A patch with an empty
+//pattern is never applied and does not hold the scan up. onApplied(address, patternSize) runs after each
+//applied patch. Returns how many patches were applied.
 template <class PatchT, class AppliedFn>
 static inline uint32_t ScanAndApplyPatches(uint8_t* begin, uint8_t* end, const std::vector<PatchT>& patches, AppliedFn onApplied)
 {
@@ -61,17 +63,14 @@ static inline uint32_t ScanAndApplyPatches(uint8_t* begin, uint8_t* end, const s
 		for (size_t i = 0; i < patches.size(); i++)
 		{
 			const size_t size = patches[i].Pattern.size();
-			if (size == 0 || size > left || memcmp(address, &patches[i].Pattern[0], size) != 0)
+			if (found[i] || size > left || memcmp(address, &patches[i].Pattern[0], size) != 0)
 				continue;
 
 			patches[i].Patch(address);
 			onApplied(address, size);
 			applied++;
-			if (!found[i])
-			{
-				found[i] = true;
-				missing--;
-			}
+			found[i] = true;
+			missing--;
 			break;
 		}
 

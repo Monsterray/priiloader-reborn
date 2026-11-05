@@ -96,14 +96,33 @@ static void test_repeat_before_other_found(void)
 {
 	Buffer b(256);
 	b.put(10, B({1, 2}));
-	b.put(20, B({1, 2})); /* matches again before the other pattern is found */
+	b.put(20, B({1, 2})); /* matches again before the other pattern is found: left alone */
 	b.put(50, B({3, 4}));
 	b.put(60, B({1, 2})); /* after the stop */
 	Patches p = { TestPatch(B({1, 2}), B({9, 9}), b.begin()), TestPatch(B({3, 4}), B({8, 8}), b.begin()) };
-	CHECK(scan(b, p) == 3, "expected 3 applications");
-	CHECK(p[0].Applied == 2 && p[1].Applied == 1, "applied %d and %d times", p[0].Applied, p[1].Applied);
-	CHECK(b.mem[10] == 9 && b.mem[20] == 9, "both early sites patched");
+	CHECK(scan(b, p) == 2, "expected 2 applications");
+	CHECK(p[0].Applied == 1 && p[1].Applied == 1, "applied %d and %d times", p[0].Applied, p[1].Applied);
+	CHECK(b.mem[10] == 9 && b.mem[20] == 1, "only the first site patched");
+	CHECK(b.mem[50] == 8, "the other patch not applied");
 	CHECK(b.mem[60] == 1, "site after the stop patched");
+}
+
+static void test_unmatched_patch_writes_no_more(void)
+{
+	/* FakeSign, FakeSignOld and EsIdentify can't all match on one IOS: the scan reads to the end, but
+	   the patches that did match are not written again at their later sites */
+	Buffer b(256);
+	b.put(10, B({1, 2}));
+	b.put(20, B({3, 4}));
+	b.put(100, B({1, 2}));
+	b.put(200, B({3, 4}));
+	Patches p = { TestPatch(B({1, 2}), B({9, 9}), b.begin()), TestPatch(B({5, 6, 7}), B({0, 0, 0}), b.begin()),
+		TestPatch(B({3, 4}), B({8, 8}), b.begin()) };
+	CHECK(scan(b, p) == 2, "expected 2 applications");
+	CHECK(p[0].Applied == 1 && p[1].Applied == 0 && p[2].Applied == 1, "applied %d, %d and %d times", p[0].Applied,
+		p[1].Applied, p[2].Applied);
+	CHECK(b.mem[100] == 1 && b.mem[200] == 3, "later sites written");
+	CHECK(b.guard_intact(), "guard written");
 }
 
 static void test_pattern_at_very_end(void)
@@ -188,6 +207,7 @@ static const struct hc_test tests[] = {
 	{ "all_applied", test_all_applied, false },
 	{ "stops_once_each_applied", test_stops_once_each_applied, false },
 	{ "repeat_before_other_found", test_repeat_before_other_found, false },
+	{ "unmatched_patch_writes_no_more", test_unmatched_patch_writes_no_more, false },
 	{ "pattern_at_very_end", test_pattern_at_very_end, false },
 	{ "pattern_longer_than_buffer", test_pattern_longer_than_buffer, false },
 	{ "no_read_past_end", test_no_read_past_end, false },

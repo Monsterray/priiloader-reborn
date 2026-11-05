@@ -35,6 +35,8 @@ CFLAGS	= -g -O2 -Wall $(MACHDEP) $(INCLUDE)
 CXXFLAGS	=	$(CFLAGS)
 
 LDFLAGS	=	-g $(MACHDEP) -Wl,-Map,$(notdir $@).map,--section-start,.init=0x80005000
+#libogc 3.1 leaves Bluetooth slots 3-5 without a command queue: ../Shared/wpadqueue.c gives them one
+LDFLAGS	+=	-Wl,--wrap=wiiuse_init_cmd_queue
 
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
