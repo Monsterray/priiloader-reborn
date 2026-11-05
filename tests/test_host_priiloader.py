@@ -1,9 +1,12 @@
 """Builds and runs the priiloader app's host tests (tests/host/priiloader).
 
-src/priiloader/source/hacks.cpp, nfo.cpp and password_file.cpp are compiled unchanged for the PC,
-against a simulated NAND (ISFS) and a heap that guards every block. Skipped when no clang++ is found.
-hacks.cpp can be swapped for another copy (HC_PRIILOADER_HACKS=path, e.g. from git show HEAD:...) to
-check that the tests fail on the code they were written against. HC_ASAN=1 adds AddressSanitizer.
+src/priiloader/source/hacks.cpp, nfo.cpp, password_file.cpp and settings.cpp are compiled unchanged for the PC,
+against a simulated NAND (ISFS) and a heap that guards every block; mem2_manager.c is compiled as C for a
+32 bit target (it casts pointers to u32), and src/Shared/IOSScan.hpp and playlog_id.h are included as they are.
+Skipped when no clang++ is found. hacks.cpp, settings.cpp and mem2_manager.c can be swapped for another copy
+(HC_PRIILOADER_HACKS, HC_PRIILOADER_SETTINGS, HC_PRIILOADER_MEM2 = path, e.g. from git show HEAD:...) to
+check that the tests fail on the code they were written against. HC_ASAN=1 adds AddressSanitizer
+(not to the 32 bit mem2 test).
 """
 import os
 import shutil
@@ -16,6 +19,16 @@ HOST = os.path.join(ROOT, "tests", "host", "priiloader")
 SRC = os.path.join(ROOT, "src", "priiloader", "source")
 INC = os.path.join(ROOT, "src", "priiloader", "include")
 SHARED = os.path.join(ROOT, "src", "Shared")
+
+
+def find_clang_c():
+    """clang (the C driver) next to clang++, or on PATH."""
+    cxx = find_clang()
+    if cxx:
+        base = os.path.join(os.path.dirname(cxx), "clang" + (".exe" if os.name == "nt" else ""))
+        if os.path.exists(base):
+            return base
+    return shutil.which("clang")
 
 
 def find_clang():
@@ -40,6 +53,38 @@ class HostPriiloaderTests(unittest.TestCase):
             cmd += [os.path.join(HOST, test + ".cpp")] + sources + ["-o", exe]
             build = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            env = dict(os.environ)
+            if os.name == "nt":
+                # AddressSanitizer's runtime DLL sits in LLVM's own folders
+                llvm = os.path.dirname(cxx) if os.path.dirname(cxx) else ""
+                lib = os.path.join(os.path.dirname(llvm), "lib", "clang")
+                extra = [llvm] + ([os.path.join(lib, v, "lib", "windows") for v in os.listdir(lib)] if os.path.isdir(lib) else [])
+                env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+            try:
+                run = subprocess.run([exe], capture_output=True, text=True, timeout=300, cwd=tmp, env=env)
+            except subprocess.TimeoutExpired as e:
+                self.fail("%s hung: %s" % (test, e.stdout))
+            out = run.stdout + run.stderr
+            self.assertEqual(run.returncode, 0, out)
+            self.assertNotIn("FAIL", out)
+
+    def build_and_run_c32(self, test, sources):
+        """Builds a C test for a 32 bit target (the Wii's pointer size) and runs it."""
+        cc = find_clang_c()
+        if cc is None:
+            self.skipTest("clang not found")
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = os.path.join(tmp, "probe.c")
+            with open(probe, "wb") as f:
+                f.write(b"int main(void) { return 0; }")
+            if subprocess.run([cc, "-m32", probe, "-o", os.path.join(tmp, "probe")],
+                              capture_output=True, cwd=tmp).returncode != 0:
+                self.skipTest("clang cannot build 32 bit programs here")
+            exe = os.path.join(tmp, test + (".exe" if os.name == "nt" else ""))
+            cmd = [cc, "-m32", "-std=gnu11", "-w", "-g", "-I", os.path.join(HOST, "stubs"), "-I", INC,
+                   os.path.join(HOST, test + ".c")] + sources + ["-o", exe]
+            build = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             try:
                 run = subprocess.run([exe], capture_output=True, text=True, timeout=300, cwd=tmp)
             except subprocess.TimeoutExpired as e:
@@ -57,6 +102,20 @@ class HostPriiloaderTests(unittest.TestCase):
 
     def test_password_file(self):
         self.build_and_run("test_password", [os.path.join(HOST, "sim.cpp"), os.path.join(SRC, "password_file.cpp")])
+
+    def test_settings(self):
+        settings = os.environ.get("HC_PRIILOADER_SETTINGS", os.path.join(SRC, "settings.cpp"))
+        self.build_and_run("test_settings", [os.path.join(HOST, "sim.cpp"), settings])
+
+    def test_mem2_manager(self):
+        mem2 = os.environ.get("HC_PRIILOADER_MEM2", os.path.join(SRC, "mem2_manager.c"))
+        self.build_and_run_c32("test_mem2", [mem2])
+
+    def test_ios_scan(self):
+        self.build_and_run("test_iosscan", [])
+
+    def test_playlog_id(self):
+        self.build_and_run("test_playlog_id", [])
 
 
 if __name__ == "__main__":

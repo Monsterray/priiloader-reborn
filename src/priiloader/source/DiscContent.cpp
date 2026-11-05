@@ -104,12 +104,38 @@ void LaunchGamecubeDisc(void)
 	throw "launching BC failed(" + std::to_string(ret) + ")";
 }
 
-void LaunchWiiDisc(void)
+//the apploader is read to this address; it can use the memory up to the end of MEM1
+#define APPLOADER_ADDRESS	0x81200000u
+#define APPLOADER_MAX_SIZE	(0x81800000u - APPLOADER_ADDRESS)
+
+//what LaunchWiiDisc has to give back, whichever way it ends (also when it throws)
+struct WiiDiscResources
 {
 	DVDTableOfContent* tableOfContent = NULL;
 	DVDPartitionInfo* partitionsInfo = NULL;
 	u8* tmd_buf = NULL;
 	u8 partitionOpened = 0;
+
+	void Release()
+	{
+		if (partitionOpened)
+			DVDClosePartition();
+		partitionOpened = 0;
+
+		mem_free(tableOfContent);
+		mem_free(partitionsInfo);
+		mem_free(tmd_buf);
+	}
+	~WiiDiscResources() { Release(); }
+};
+
+void LaunchWiiDisc(void)
+{
+	WiiDiscResources resources;
+	DVDTableOfContent*& tableOfContent = resources.tableOfContent;
+	DVDPartitionInfo*& partitionsInfo = resources.partitionsInfo;
+	u8*& tmd_buf = resources.tmd_buf;
+	u8& partitionOpened = resources.partitionOpened;
 	u32 gameID = 0;
 	s32 ret = 0;
 	apploader_entry app_entry = NULL;
@@ -154,7 +180,12 @@ void LaunchWiiDisc(void)
 		throw "Failed to Read Partition Info (" + std::to_string(ret) + ")";
 
 	DVDPartitionInfo* bootGameInfo = NULL;
-	for (u32 index = 0; index < tableOfContent->bootInfoCount; index++)
+	//bootInfoCount comes from the disc; only the partitionsInfo buffer (0x20 bytes) was read
+	u32 bootInfoCount = tableOfContent->bootInfoCount;
+	const u32 maxBootInfo = 0x20 / sizeof(DVDPartitionInfo);
+	if (bootInfoCount > maxBootInfo)
+		bootInfoCount = maxBootInfo;
+	for (u32 index = 0; index < bootInfoCount; index++)
 	{
 		if (partitionsInfo[index].len != 0)
 			continue;
@@ -228,13 +259,23 @@ void LaunchWiiDisc(void)
 
 	DCFlushRange(&appldr_header, sizeof(apploader_hdr));
 
+	//the sizes come from the disc and are signed: bound them to the memory the apploader may use
+	if (appldr_header.size < 0 || appldr_header.trailersize < 0)
+		throw "Invalid apploader size";
+	const u64 apploaderLength = static_cast<u64>(appldr_header.size) + static_cast<u64>(appldr_header.trailersize);
+	if (apploaderLength > APPLOADER_MAX_SIZE)
+		throw "Apploader too big (" + std::to_string(apploaderLength) + ")";
+	const u32 apploaderEntry = reinterpret_cast<u32>(appldr_header.entry);
+	if (apploaderEntry < APPLOADER_ADDRESS || apploaderEntry >= APPLOADER_ADDRESS + APPLOADER_MAX_SIZE)
+		throw "Invalid apploader entry";
+
 	//Continue reading the apploader now that we have the header
 	//TODO (?) : replace this address with a mem2 address if possible?
-	ret = DVDRead(APPLOADER_HDR_OFFSET + sizeof(apploader_hdr), reinterpret_cast<void*>(0x81200000), appldr_header.size + appldr_header.trailersize);
+	ret = DVDRead(APPLOADER_HDR_OFFSET + sizeof(apploader_hdr), reinterpret_cast<void*>(APPLOADER_ADDRESS), static_cast<u32>(apploaderLength));
 	if (ret <= 0)
 		throw "Failed to read start of apploader (" + std::to_string(ret) + ")";
-	DCFlushRange(reinterpret_cast<void*>(0x81200000), appldr_header.size + appldr_header.trailersize);
-	ICInvalidateRange(reinterpret_cast<void*>(0x81200000), appldr_header.size + appldr_header.trailersize);
+	DCFlushRange(reinterpret_cast<void*>(APPLOADER_ADDRESS), static_cast<u32>(apploaderLength));
+	ICInvalidateRange(reinterpret_cast<void*>(APPLOADER_ADDRESS), static_cast<u32>(apploaderLength));
 
 	ICSync();
 	app_entry = (apploader_entry)appldr_header.entry;
@@ -346,14 +387,9 @@ void LaunchWiiDisc(void)
 	}
 
 	//cleanup everything
-	if (partitionOpened)
-		DVDClosePartition();
+	resources.Release();
 
 	DVDStopDriveAsync();
-
-	mem_free(tableOfContent);
-	mem_free(partitionsInfo);
-	mem_free(tmd_buf);
 
 	DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
 	DVDCloseHandle();

@@ -64,8 +64,9 @@ static u8 notMountableFlag = 0;
 static bool _sdMounted = false;
 static bool _usbMounted = false;
 static mutex_t mountPointMutex;
+static bool _mutexInit = false;
 static lwp_t mnt_thread_handle = LWP_THREAD_NULL;
-static bool quit_thread = 0;
+static volatile bool quit_thread = false;
 
 //this tells libdvm to not mount usb automatically, because they can be *very* slow in mounting...
 unsigned g_dvmOgcUsbMount = 0;
@@ -83,8 +84,11 @@ void _pollMount(void)
 		_sdMounted = false;
 	}
 
+	//one startup call per poll: it talks to the USB stack
+	const bool usbReady = __io_usbstorage.startup();
+
 	//or usb removed?
-	if (_usbMounted && __io_usbstorage.startup() && !__io_usbstorage.isInserted())
+	if (_usbMounted && usbReady && !__io_usbstorage.isInserted())
 	{
 		fatUnmount(USB_UNMOUNTPOINT);
 		_usbMounted = false;
@@ -107,7 +111,7 @@ void _pollMount(void)
 	}
 
 	//or can we mount usb?
-	if (__io_usbstorage.startup() && __io_usbstorage.isInserted() && !_usbMounted && !(notMountableFlag & StorageDevice::USB))
+	if (usbReady && __io_usbstorage.isInserted() && !_usbMounted && !(notMountableFlag & StorageDevice::USB))
 	{
 		if (fatMountSimple(USB_MOUNTPOINT, &__io_usbstorage))
 		{
@@ -142,7 +146,7 @@ void _pollMount(void)
 	string oldMountPoint = __mountPoint;
 
 	//verify settings and set mountPoint
-	switch (settings->PreferredMountPoint)
+	switch (settings != NULL ? settings->PreferredMountPoint : MOUNT_AUTO)
 	{
 		case MOUNT_USB:
 			if (_usbMounted && __mountPoint != USB_MOUNTPOINT)
@@ -174,7 +178,10 @@ void* _mountThread(void* args)
 	while (!quit_thread)
 	{
 		_pollMount();
-		usleep(500);
+
+		//poll twice a second, in short steps so ShutdownMounts does not wait for a whole interval
+		for (int i = 0; i < 10 && !quit_thread; i++)
+			usleep(50000);
 	}
 
 	return 0;
@@ -187,7 +194,11 @@ void InitMounts(mountChangedCallback callback)
 	if (_init)
 		return;
 
-	LWP_MutexInit(&mountPointMutex, false);
+	if (!_mutexInit)
+	{
+		LWP_MutexInit(&mountPointMutex, false);
+		_mutexInit = true;
+	}
 	quit_thread = false;
 	LWP_CreateThread(&mnt_thread_handle, _mountThread, NULL, NULL, 16 * 1024, 50);
 	_init = true;
@@ -199,11 +210,13 @@ void ShutdownMounts()
 		return;
 
 	//shutdown the mounting thread
+	//join before taking the mutex: the thread takes it on every poll, so holding it here can deadlock
 	quit_thread = true;
-	MutexLock mountLock(mountPointMutex);
 	if (mnt_thread_handle != LWP_THREAD_NULL) 
 		LWP_JoinThread(mnt_thread_handle, NULL);
 	mnt_thread_handle = LWP_THREAD_NULL;
+
+	MutexLock mountLock(mountPointMutex);
 
 	//unmount devices
 	if (_sdMounted)

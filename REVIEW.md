@@ -16,6 +16,24 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ## Findings
 
+### Remaining defects (2026-11-04)
+
+Checked with host tests (`tests/test_host_http.py`, `tests/test_host_priiloader.py`, also under ASan), a clean build with no warnings, and an independent read-only review. Not yet run on a Wii.
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | `HTTP_Parser.cpp`: a negative or huge `Content-Length` reached malloc and recv as ~4 GB; the socket leaked on every call and when the host lookup failed; redirects never worked. `HttpGet` is now a loop of at most 5 redirects; bodies are capped at 16 MB; header names match in any case. | `test_http`, 21 cases (19 fail on the old code) |
+| Fix | Update check: `UpdateStruct` not initialised; an empty changelog wrote `buffer[-1]`. | build |
+| Fix | A failed DOL or System Menu boot left IRQs off and hung; now restored when the loader returns. | build |
+| Fix | `meta.xml` with an empty `<name/>` or `<arg/>` dropped the AHBPROT flag and later arguments. | build |
+| Fix | Play log got one truncated byte of the title id (`BuildPlaylogId`). Leaks and an unchecked TMD size in `titles.cpp`; printf argument mismatches. | `test_playlog_id` |
+| Fix | `LaunchWiiDisc`: disc-controlled partition count indexed a 4-entry buffer; apploader length uncapped into 0x81200000 (now at most 0x600000, the rest of MEM1); cleanup on every exit. | build |
+| Fix | `DecryptvWiiSysMenu`: offsets and sizes checked against the file; SHA and AES closed on every path; patch scanners stay inside the file. | build |
+| Fix | `mount.cpp`: `ShutdownMounts` joined the poll thread while holding the mutex the thread takes (deadlock before the System Menu boot); poll every 500 ms, not 0.5 ms. | build |
+| Fix | `mem2_manager.c`: `strndup` read past short strings, `calloc` overflow, `memalign` ignored `align` (now refuses more than 32). | `test_mem2` (5 of 10 fail on the old code) |
+| Fix | `settings.cpp`: a stats failure deleted the settings file and a short read was taken as valid; both now use defaults and leave the file alone. | `test_settings` (2 fail on the old code) |
+| Fix | `PatchIOS`: stopped on the total match count, so duplicates could end the scan before ES_Identify was patched; now stops when every patch has applied at least once (never patches less than before). Result clamped to the s8 range. `DisableAHBProt` memalign argument order. | `test_iosscan` |
+
 ### Boot and NAND safety (2026-11-04)
 
 Checked with host tests (`tests/test_host_installer.py`, `tests/test_host_priiloader.py`), a clean build with no warnings, and an independent read-only review of each half. Not yet run on a Wii.
@@ -53,13 +71,9 @@ Wii checks for the boot and NAND safety fixes (only with the owner at the Wii an
 
 Not fixed: the boot content and the TMD are replaced by two separate renames, so power loss between them leaves a hash mismatch; the System Menu copy and `title_or.tmd` are the recovery. A fix needs a redesign.
 
-Other defects:
+Wii checks for the remaining-defect fixes: a System Menu boot on a vWii; a boot with ES_Identify (System Menu IOS off), the Gecko log showing one fakesign and one EsIdentify hit; a retail disc launch; the update check against the real server.
 
-- `HTTP_Parser.cpp`: negative `Content-Length` becomes a 4 GB length; the socket leaks on every call; redirects never match (`location: ` prefix kept).
-- `main.cpp` update check: `UpdateStruct` not initialised; `file_size == 0` writes `buffer[-1]`.
-- `titles.cpp` (626): play log gets one truncated byte of the title id. Leaks at 475 and 511.
-- `mount.cpp` `ShutdownMounts`: joins the poll thread while holding the mutex the thread takes.
-- `IOS.cpp` `PatchIOS`: the stop condition counts matches, not patches, so it often scans the whole range.
+Not fixed: `PatchIOSKernel` never counts its patches, so it always scans the whole range (its caller ignores the result). The changelog lines keep a leading newline for CRLF text.
 
 Speed (autoboot path):
 
@@ -67,7 +81,7 @@ Speed (autoboot path):
 - `state.dat` read twice (`CheckBootState`, then `GetStateFlags`).
 - The hacks file is read 32 bytes per ISFS call on every System Menu boot.
 
-Size (priiloader.dol is 826368 bytes):
+Size (priiloader.dol is 838304 bytes; 826368 before these fixes):
 
 - About 95 KB of exception tables (`.eh_frame`, `.eh_frame_hdr`); the code has 89 `try`/`catch` lines, so dropping exceptions is a refactor.
 - `wii_font_Bitmap` is 97280 bytes.
@@ -75,5 +89,4 @@ Size (priiloader.dol is 826368 bytes):
 
 Test layers:
 
-- Host test harness with an ISFS stand-in, for the parsers and the installer sequence.
 - A Dolphin run with a known log line (USB Gecko output).

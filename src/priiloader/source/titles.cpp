@@ -36,6 +36,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "font.h"
 #include "settings.h"
 #include "playlog.h"
+#include "playlog_id.h"
 #include "state.h"
 #include "mem2_manager.h"
 #include "dvd.h"
@@ -326,7 +327,7 @@ tmd* TitleInformation::GetTMD()
 			ret = ES_GetStoredTMDSize(_titleId, &blobSize);
 			if(ret == -106)
 			{
-				gdprintf("GetTMD: title %s TMD not found", GetTitleLongString(_titleId));
+				gdprintf("GetTMD: title %s TMD not found", GetTitleLongString(_titleId).c_str());
 				return NULL;
 			}
 			
@@ -359,13 +360,17 @@ tmd* TitleInformation::GetTMD()
 			if (ret < 0)
 				throw "GetTMD: failed to file info of " + GetTitleLongString(_titleId) + ",error " + std::to_string(ret);
 
+			//the file is not trusted: it has to fit the buffer
+			if (TmdStats->file_length == 0 || TmdStats->file_length > MAX_SIGNED_TMD_SIZE)
+				throw "GetTMD: invalid TMD size " + std::to_string(TmdStats->file_length) + " of " + GetTitleLongString(_titleId);
+
 			blob = static_cast<signed_blob*>(mem_align(32, MAX_SIGNED_TMD_SIZE));
 			if (blob == NULL)
 				throw "GetTMD: failed to allocate TMD of " + GetTitleLongString(_titleId);
 
 			memset(blob, 0, MAX_SIGNED_TMD_SIZE);
 			ret = ISFS_Read(fd, blob, TmdStats->file_length);
-			if (ret < 0)
+			if (ret < 0 || static_cast<u32>(ret) != TmdStats->file_length)
 				throw "GetTMD: failed read TMD of " + GetTitleLongString(_titleId) + ",error " + std::to_string(ret);
 
 			ISFS_Close(fd);
@@ -473,9 +478,10 @@ TitleName TitleInformation::GetTitleName()
 				};
 
 				mem_free(openingBanner);
-				return _titleName;				
+				mem_free(ticketViews);
+				return _titleName;
 			}
-			throw "failed to retrieve title content of " + GetTitleLongString(_titleId) + ",error " + std::to_string(ret);
+			throw "failed to retrieve title content of " + GetTitleLongString(_titleId) + ",error " + std::to_string(fh);
 		}
 
 		//no longer need the ticket views
@@ -508,6 +514,7 @@ TitleName TitleInformation::GetTitleName()
 						.UnicodeName = {0}
 					};
 
+					mem_free(openingBanner);
 					return _titleName;
 				}
 
@@ -518,7 +525,7 @@ TitleName TitleInformation::GetTitleName()
 			ret = ISFS_Read(fh, openingBanner, sizeof(NandOpeningBanner));
 			ISFS_Close(fh);
 			if (ret < 0) 
-				throw "failed to read title content of " + GetTitleLongString(_titleId) + ",error " + std::to_string(fh);
+				throw "failed to read title content of " + GetTitleLongString(_titleId) + ",error " + std::to_string(ret);
 		}
 
 		auto imetHeader = static_cast<NandOpeningBanner*>(openingBanner)->Header;
@@ -623,9 +630,9 @@ void TitleInformation::LaunchTitle()
 			//kill play_rec.dat if its already there...
 			ISFS_Delete(PLAYRECPATH);
 			//and create it with the new info :)
-			std::string id;
-			id.push_back(TITLE_LOWER(_titleId));
-			Playlog_Update(id.c_str(), titleName.UnicodeName);
+			char id[6];
+			BuildPlaylogId(TITLE_LOWER(_titleId), id);
+			Playlog_Update(id, titleName.UnicodeName);
 		}
 		else
 		{
@@ -681,7 +688,7 @@ void TitleInformation::LaunchTitle()
 				case 'N':
 				case 'P':
 				case 'Q':
-					gprintf("LaunchTitle : (%08X\\%08X) Region Mismatch ! %d -> %d", _titleId, VI_TVMODE_FMT(rmode->viTVMode), titleRegion);
+					gprintf("LaunchTitle : (%08X\\%08X) Region Mismatch ! %d -> %d", TITLE_UPPER(_titleId), TITLE_LOWER(_titleId), VI_TVMODE_FMT(rmode->viTVMode), static_cast<int>(titleRegion));
 					//calling SetVideoModeForTitle to force video mode here would inexplicably revert (correct) 480p to 480i sometimes; see issue #376
 					//instead we call SetupVideoInterfaceConfig later on to setup the VICFG bits and just shut down video				
 					ShutdownVideo();
@@ -716,7 +723,7 @@ void TitleInformation::LaunchTitle()
 	}
 	catch (const std::string& ex)
 	{
-		gprintf("LaunchTitle (%s) Exception : %s", GetTitleLongString(_titleId).c_str(), ex);
+		gprintf("LaunchTitle (%s) Exception : %s", GetTitleLongString(_titleId).c_str(), ex.c_str());
 	}
 	catch(...)
 	{	

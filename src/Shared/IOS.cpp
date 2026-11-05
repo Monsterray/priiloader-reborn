@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <ogc/machine/processor.h>
 
 #include "IOS.hpp"
+#include "IOSScan.hpp"
 #include "gecko.h"
 
 #ifndef ALIGN32
@@ -220,7 +221,7 @@ bool DisableAHBProt()
 		if(fd < 0)
 			throw "Failed to open /dev/sha : " + std::to_string(fd);
 		
-		params = static_cast<ioctlv*>(memalign(sizeof(ioctlv) * 4, 32));
+		params = static_cast<ioctlv*>(memalign(32, sizeof(ioctlv) * 4));
 		if(params == NULL)
 			throw "failed to alloc IOS call data";
 
@@ -363,33 +364,21 @@ s8 PatchIOS(std::vector<IosPatch> patches)
 	ICInvalidateRange(mem_block, mem_length);
 	DCFlushRange(mem_block, mem_length);
 	
-	while ((u32)mem_block < 0x93FFFFFF)
+	u8* mem_end = reinterpret_cast<u8*>(0x94000000);
+	if (mem_block != NULL && mem_block < mem_end)
 	{
-		auto iterator = std::find_if(patches.begin(), patches.end(), [&patchesFound, mem_block](const IosPatch& iosPatch)
+		patchesFound = ScanAndApplyPatches(mem_block, mem_end, patches, [](u8* address, size_t patchSize)
 		{
-			s32 patchSize = iosPatch.Pattern.size();
-			if (memcmp(mem_block, &iosPatch.Pattern[0], patchSize) != 0)
-				return false;
-
-			//Apply patch
-			iosPatch.Patch(mem_block);
-
 			//flush cache
-			u8* address = (u8*)(((u32)mem_block) >> 5 << 5);
-			DCFlushRange(address, (patchSize >> 5 << 5) + 64);
-			ICInvalidateRange(address, (patchSize >> 5 << 5) + 64);
-			patchesFound++;
-			return true;
+			u8* flushAddress = (u8*)(((u32)address) >> 5 << 5);
+			DCFlushRange(flushAddress, (patchSize >> 5 << 5) + 64);
+			ICInvalidateRange(flushAddress, (patchSize >> 5 << 5) + 64);
 		});
-
-		if (iterator != patches.end() && patchesFound == patches.size())
-			break;
-
-		mem_block++;
 	}
 
 	WriteRegister16(0x0d8b420a, 1);
-	return patchesFound;
+	//the result is an s8 and negative means failure : don't let a long scan wrap
+	return patchesFound > 127 ? 127 : patchesFound;
 }
 s8 PatchIOSKernel(std::vector<IosPatch> patches)
 {

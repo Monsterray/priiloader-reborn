@@ -196,11 +196,17 @@ bool RemoveMem2Area(const int area)
 }
 
  
+/* the heap hands out blocks aligned to 32 (the alignment it is initialised with) and no more:
+ * an alignment above 32 cannot be honoured, so it fails (NULL) instead of returning a block that
+ * is not aligned as asked. Every caller asks for 32. */
 void* mem2_memalign(u8 align, u32 size, const int area)
 {
 	void *ptr;
- 
-	if(mem2_areas[area].size==0) 
+
+	if(align > 32)
+		return NULL;
+
+	if(area < 0 || area >= MAX_AREA || mem2_areas[area].size==0) 
 	{
 #ifdef DEBUG_MEM2_LEVEL
 		printf("mem2 malloc error: area %i not found\n",area);
@@ -306,9 +312,12 @@ void* mem2_realloc(void *ptr, u32 newsize, const int area)
 
 void* mem2_calloc(u32 num, u32 size, const int area)
 {
-	void *ptr = mem2_malloc(num*size,area);
+	if(size != 0 && num > 0xFFFFFFFFu / size)
+		return NULL; // num*size does not fit in 32 bits
+	u32 total = num*size;
+	void *ptr = mem2_malloc(total,area);
 	if( ptr == NULL ) return NULL;
-	memset(ptr, 0, num*size);
+	memset(ptr, 0, total);
 	return ptr;
 }
 
@@ -328,10 +337,10 @@ void* mem2_calloc(u32 num, u32 size, const int area)
 {
     char *ptr= NULL;
     if(s){
-        int len = n + 1;
-        ptr = mem2_calloc(1, len, area);
+        size_t copy = strnlen(s, n); // never read past the string's end
+        ptr = mem2_calloc(1, copy + 1, area);
         if (ptr)
-            memcpy(ptr, s, len);
+            memcpy(ptr, s, copy); // calloc zeroed the terminator
     }
     return ptr;
 }

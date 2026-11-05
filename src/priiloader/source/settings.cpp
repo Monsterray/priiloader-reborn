@@ -34,7 +34,19 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 Settings *settings=NULL;
 
-static u32 Create_Settings_File( void )
+//the settings of a new install; also what is used when the file cannot be read
+static void SetDefaultSettings( void )
+{
+	memset( settings, 0, sizeof( Settings ) );
+	settings->RCVersion = VERSION_RC;
+	settings->version = VERSION_MERGED;
+	settings->UseSystemMenuIOS = 1;
+	settings->autoboot = AUTOBOOT_SYS;
+	settings->BlackBackground = 1;
+}
+
+//writes the default settings to a new file. returns 1 on success, a negative number on failure (error is set)
+static s32 Create_Settings_File( void )
 {
 	if(settings == NULL)
 	{
@@ -43,24 +55,20 @@ static u32 Create_Settings_File( void )
 	s32 fd = 0;
 	ISFS_CreateFile("/title/00000001/00000002/data/loader.ini", 0, 3, 3, 3);
 	//set a few default settings
-	settings->RCVersion = VERSION_RC;
-	settings->version = VERSION_MERGED;
-	settings->UseSystemMenuIOS = 1;
-	settings->autoboot = AUTOBOOT_SYS;
-	settings->BlackBackground = 1;
+	SetDefaultSettings();
 	fd = ISFS_Open("/title/00000001/00000002/data/loader.ini", ISFS_OPEN_WRITE );
 	if( fd < 0 )
 	{
 		error = ERROR_SETTING_OPEN;
 		return fd;
 	}
-	if(ISFS_Write( fd, settings, sizeof( Settings ) )<0)
-	{
-		ISFS_Close( fd );
-		error = ERROR_SETTING_WRITE;
-		return fd;
-	}
+	s32 written = ISFS_Write( fd, settings, sizeof( Settings ) );
 	ISFS_Close( fd );
+	if( written != (s32)sizeof( Settings ) )
+	{
+		error = ERROR_SETTING_WRITE;
+		return written < 0 ? written : -1;
+	}
 	return 1;
 }
 
@@ -117,27 +125,34 @@ LoadSettingsResult LoadSettings( void )
 	if( fd < 0 )
 	{
 		//file not found create a new one
-		Create_Settings_File();
 		// settings was created from scratch. no need to do it all over
-		return error == ERROR_NONE ? LOADSETTINGS_INI_CREATED : LOADSETTINGS_FAIL;
+		return Create_Settings_File() > 0 ? LOADSETTINGS_INI_CREATED : LOADSETTINGS_FAIL;
 	}
 
 	STACK_ALIGN(fstats, status, 1, 32);
 	memset(status,0,sizeof(fstats));
-	ISFS_GetFileStats(fd,status);
+	if ( ISFS_GetFileStats(fd,status) < 0 )
+	{
+		//we do not know what is in the file; leave it alone and run on the defaults
+		ISFS_Close(fd);
+		gprintf("LoadSettings : ISFS_GetFileStats failed, using the defaults");
+		SetDefaultSettings();
+		error = ERROR_SETTING_READ;
+		return LOADSETTINGS_FAIL;
+	}
 	if ( status->file_length != sizeof(Settings) )
 	{
 		ISFS_Close(fd);
 		gprintf("LoadSettings : status->file_length != struct size , resetting...");
 		//recreate settings file
 		ISFS_Delete("/title/00000001/00000002/data/loader.ini");
-		Create_Settings_File();
-		return error == ERROR_NONE ? LOADSETTINGS_INI_CREATED : LOADSETTINGS_FAIL;
+		return Create_Settings_File() > 0 ? LOADSETTINGS_INI_CREATED : LOADSETTINGS_FAIL;
 	}
 
-	if(ISFS_Read( fd, settings, sizeof( Settings ) )<0)
+	if(ISFS_Read( fd, settings, sizeof( Settings ) ) != (s32)sizeof( Settings ))
 	{
 		ISFS_Close( fd );
+		SetDefaultSettings();
 		error = ERROR_SETTING_READ;
 		return LOADSETTINGS_FAIL;
 	}
@@ -145,8 +160,9 @@ LoadSettingsResult LoadSettings( void )
 	{
 		settings->version = VERSION_MERGED;
 		settings->RCVersion = VERSION_RC;
-		ISFS_Seek( fd, 0, 0 );
-		ISFS_Write( fd, settings, sizeof( Settings ) );
+		//best effort: the in memory settings are right either way
+		if( ISFS_Seek( fd, 0, 0 ) < 0 || ISFS_Write( fd, settings, sizeof( Settings ) ) != (s32)sizeof( Settings ) )
+			gprintf("LoadSettings : updating the settings version failed");
 	}
 	ISFS_Close( fd );
 	return LOADSETTINGS_OK;

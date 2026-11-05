@@ -118,12 +118,46 @@ u32 GetSysMenuVersion( void )
 	return sysver;
 }
 
-static bool DecryptvWiiSysMenu(void* data)
+//makes sure SHA and AES are closed again, whichever way DecryptvWiiSysMenu returns
+struct CryptoEngines
+{
+	bool shaOpen = false;
+	bool aesOpen = false;
+
+	void CloseSha()
+	{
+		if (shaOpen)
+			SHA_Close();
+		shaOpen = false;
+	}
+
+	~CryptoEngines()
+	{
+		CloseSha();
+		if (aesOpen)
+			AES_Close();
+	}
+};
+
+//data is the whole boot file, size its length. the file is not trusted: every offset and length in it is checked
+static bool DecryptvWiiSysMenu(void* data, u32 size)
 {
 	dolhdr* dol = static_cast<dolhdr*>(data);
 
+	if (size < sizeof(dolhdr))
+	{
+		gprintf("boot file too small");
+		return false;
+	}
+
 	// The ancast image will be in the first data section
-	EspressoAncastHeader* anc = (EspressoAncastHeader*) ((u32) data + dol->offsetData[0]);
+	const u32 ancastOffset = dol->offsetData[0];
+	if (ancastOffset > size || size - ancastOffset < sizeof(EspressoAncastHeader))
+	{
+		gprintf("invalid ancast offset");
+		return false;
+	}
+	EspressoAncastHeader* anc = (EspressoAncastHeader*) ((u32) data + ancastOffset);
 
 	// Verify the ancast image
 	if (anc->header_block.magic != ANCAST_MAGIC)
@@ -150,9 +184,22 @@ static bool DecryptvWiiSysMenu(void* data)
 		return false;
 	}
 
+	// the body follows the header, inside the file
+	if (anc->info_block.body_size > size - ancastOffset - sizeof(EspressoAncastHeader))
+	{
+		gprintf("invalid ancast body size");
+		return false;
+	}
+
 	// Verify body hash
+	CryptoEngines engines;
 	u32 hash[5] ATTRIBUTE_ALIGN(32) = {};
-	SHA_Init();
+	if (SHA_Init() < 0)
+	{
+		gprintf("failed to init sha");
+		return false;
+	}
+	engines.shaOpen = true;
 	if (SHA_Calculate(reinterpret_cast<u8 *>(anc + 1), anc->info_block.body_size, hash) < 0)
 	{
 		gprintf("failed to calculate ancast hash");
@@ -163,7 +210,7 @@ static bool DecryptvWiiSysMenu(void* data)
 		gprintf("invalid ancast hash");
 		return false;
 	}
-	SHA_Close();
+	engines.CloseSha();
 
 	// Initialize the AES engine
 	if (AES_Init() < 0)
@@ -171,6 +218,7 @@ static bool DecryptvWiiSysMenu(void* data)
 		gprintf("failed to init aes");
 		return false;
 	}
+	engines.aesOpen = true;
 
 	// Decrypt the ancast body
 	static const u8 vwii_ancast_retail_key[0x10] = { 0x2e, 0xfe, 0x8a, 0xbc, 0xed, 0xbb, 0x7b, 0xaa, 0xe3, 0xc0, 0xed, 0x92, 0xfa, 0x29, 0xf8, 0x66 };
@@ -198,7 +246,6 @@ static bool DecryptvWiiSysMenu(void* data)
 		return false;
 	}
 
-	AES_Close();
 	return true;
 }
 
@@ -209,7 +256,7 @@ static void PatchvWiiSysMenu(u8* mem_block, u32 max_address)
 	// Patch out IPC wait
 	static u32 ipc_wait_hash[] = { 0x546007bd, 0x4182fff4 };
 	static u32 ipc_wait_patch[] = { 0x546007bd, 0x60000000 };
-	for(u32 add = 0; add + (u32)mem_block < max_address; add++)
+	for(u32 add = 0; add + sizeof(ipc_wait_hash) + (u32)mem_block <= max_address; add++)
 	{
 		if (!memcmp(mem_block + add, ipc_wait_hash, sizeof(ipc_wait_hash)))
 		{
@@ -247,7 +294,7 @@ static void PatchvWiiSysMenu(u8* mem_block, u32 max_address)
 		throw "invalid system menu region";
 	}
 
-	for(u32 add = 0; add + (u32)mem_block < max_address; add++)
+	for(u32 add = 0; add + active_content_hash_size + (u32)mem_block <= max_address; add++)
 	{
 		if (!memcmp(mem_block + add, active_content_hash, active_content_hash_size))
 		{
@@ -281,7 +328,7 @@ static void PatchvWiiSysMenu(u8* mem_block, u32 max_address)
 		throw "invalid system menu region";
 	}
 
-	for(u32 add = 0; add + (u32)mem_block < max_address; add++)
+	for(u32 add = 0; add + vi_init_hash_size + (u32)mem_block <= max_address; add++)
 	{
 		if (!memcmp(mem_block + add, vi_init_hash, vi_init_hash_size))
 		{
@@ -307,6 +354,7 @@ void BootMainSysMenu( void )
 	//general
 	s32 ret = 0;
 	s32 fd = 0;
+	u32 irqLevel = 0;
 	try
 	{
 		auto TitleInfo = std::make_unique<TitleInformation>(SYSTEMMENU_TITLEID);
@@ -314,7 +362,7 @@ void BootMainSysMenu( void )
 		auto smTmd = TitleInfo->GetTMD();
 		gdprintf("ios version: %u",(u8)smTmd->sys_version);
 
-		if (smTmd->boot_index > smTmd->num_contents)
+		if (smTmd->boot_index >= smTmd->num_contents)
 		{
 			error = ERROR_SYSMENU_GETTMDFAILED;
 			throw ("Invalid boot index " + std::to_string(smTmd->boot_index));
@@ -364,12 +412,13 @@ void BootMainSysMenu( void )
 			throw "failed to read binary";
 		}
 		ISFS_Close(fd);
+		fd = -1;
 
 		// If this is a vWii menu, it needs to be decrypted first
 		if (smTmd->vwii_title)
 		{
 			gprintf("decrypting vwii sysmenu");
-			if (!DecryptvWiiSysMenu(binary))
+			if (!DecryptvWiiSysMenu(binary, bootfile_size))
 			{
 				error = ERROR_SYSMENU_GENERAL;
 				throw "failed to decrypt vwii menu";
@@ -471,6 +520,7 @@ void BootMainSysMenu( void )
 				throw ("failed to read ticket -> errno " + std::to_string(ret));
 			}
 			ISFS_Close( fd );
+			fd = -1;
 
 			fd = ISFS_Open("/sys/cert.sys",ISFS_OPEN_READ);
 			if(fd < 0 )
@@ -605,7 +655,9 @@ void BootMainSysMenu( void )
 					std::copy(system_hacks[i].patches[y].hash.begin(), system_hacks[i].patches[y].hash.end(), temp_hash);
 					std::copy(system_hacks[i].patches[y].patch.begin(), system_hacks[i].patches[y].patch.end(), temp_patch);
 
-					while( add + (u32)mem_block < max_address)
+					//the hash and the patch both have to fit in the file
+					const u32 hashPatchSize = sizeof(temp_hash) > sizeof(temp_patch) ? sizeof(temp_hash) : sizeof(temp_patch);
+					while( add + hashPatchSize + (u32)mem_block <= max_address)
 					{
 						if ( !memcmp(mem_block+add, temp_hash ,sizeof(temp_hash)) )
 						{
@@ -648,7 +700,7 @@ void BootMainSysMenu( void )
 		__STM_Close();
 		__IPC_Reinitialize();
 		__IOS_ShutdownSubsystems();
-		IRQ_Disable();
+		irqLevel = IRQ_Disable();
 		gprintf("launching sys menu... 0x%08X",loader_addr);
 		
 		//loader
@@ -656,6 +708,8 @@ void BootMainSysMenu( void )
 		const u8 binaryType = smTmd->vwii_title ? BINARY_TYPE_SYSTEM_MENU_VWII : BINARY_TYPE_SYSTEM_MENU;
 		loader(binary, patch_ptr, patch_cnt, binaryType);
 		gprintf("this ain't good");
+		//the loader came back, so interrupts have to be back too
+		IRQ_Restore(irqLevel);
 
 		//oh ow, this ain't good
 		if(system_state.Init)

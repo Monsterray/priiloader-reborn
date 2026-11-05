@@ -1125,13 +1125,14 @@ s8 BootDolFromMem(void* binary , u8 HW_AHBPROT_ENABLED, struct __argv *args )
 			VIDEO_Flush();
 			VIDEO_WaitVSync();
 		}
-		IRQ_Disable();
+		u32 irqLevel = IRQ_Disable();
 
 		gprintf("BootDolFromMem : starting binary... 0x%08X",loader_addr);	
 		ICSync();
 		loader(binary, args, args != NULL, BINARY_TYPE_DEFAULT);
 
-		//it failed. FAIL!
+		//it failed. FAIL! interrupts are needed again for the video and IOS calls below, or we hang here
+		IRQ_Restore(irqLevel);
 		gprintf("this ain't good");
 		if(system_state.Init)
 		{
@@ -1410,8 +1411,8 @@ void InstallLoadDOL( void )
 							throw "No app node found";
 						
 						auto node = appNode->FirstChildElement("name");
-						if (node != NULL)
-							temp.app_name = (std::string)node->GetText();
+						if (node != NULL && node->GetText() != NULL) //an empty <name/> has no text
+							temp.app_name = node->GetText();
 
 						if (appNode->FirstChildElement("no_ios_reload") != NULL || appNode->FirstChildElement("ahb_access") != NULL)
 							temp.HW_AHBPROT_ENABLED = 1;
@@ -1422,7 +1423,9 @@ void InstallLoadDOL( void )
 							auto arg = node->FirstChildElement("arg");
 							while (arg != NULL)
 							{
-								temp.args.push_back((std::string)arg->GetText());
+								//an empty <arg/> has no text: it is an empty argument
+								const char* argText = arg->GetText();
+								temp.args.push_back(argText != NULL ? argText : "");
 								arg = arg->NextSiblingElement("arg");
 							}
 						}
@@ -1611,7 +1614,9 @@ void InstallLoadDOL( void )
 				if( ISFS_Write( fd, buf, sizeof( char ) * size ) != (signed)(sizeof( char ) * size) )
 				{
 					PrintFormat( 1, TEXT_OFFSET("Writing dol failed!"), 240, "Writing dol failed!");
-					gprintf("writing dol failure! error %d ( 0x%08X )",fd);
+					gprintf("writing dol failure! fd %d",fd);
+					if( fd >= 0 )
+						ISFS_Close( fd );
 				}
 				else
 				{
@@ -1983,7 +1988,7 @@ void CheckForUpdate()
 
 //start update
 //---------------
-	UpdateStruct UpdateFile;
+	UpdateStruct UpdateFile = {}; //stays all zero when the fetch fails: the empty hash check below catches that
 	s32 file_size = 0;
 	u8* buffer = NULL;
 
@@ -2160,6 +2165,8 @@ void CheckForUpdate()
 		file_size = HttpGet("www.dacotaco.com", changelogFile, buffer, NULL);
 		if(file_size < 0)
 			throw "changelog error " + std::to_string(file_size) + "/" + std::to_string(GetLastHttpReply());
+		if(file_size == 0 || buffer == NULL)
+			throw "changelog error: empty file";
 
 		//we are dealing with a string, so play it safe
 		buffer[file_size-1] = 0;
@@ -2183,6 +2190,8 @@ void CheckForUpdate()
 			lines.emplace_back(stringView);
 
 		mem_free(buffer);
+		if(lines.empty())
+			lines.emplace_back("");
 		if( max_line >= lines.size() )
 			max_line = lines.size()-1;
 
@@ -2295,6 +2304,8 @@ void CheckForUpdate()
 			default:
 				if(file_size < 0)
 					throw "update error: " + std::to_string(file_size);
+				if(file_size == 0 || buffer == NULL)
+					throw "update error: empty file";
 				break;
 		}
 
