@@ -42,7 +42,7 @@ class HostHttpTests(unittest.TestCase):
                 shutil.copy(override, parser)
             exe = os.path.join(tmp, "test_http" + (".exe" if os.name == "nt" else ""))
             cmd = [cxx, "-std=c++17", "-g", "-D_CRT_SECURE_NO_WARNINGS", "-Wno-return-type-c-linkage",
-                   "-I", os.path.join(HOST, "stubs"), "-I", INC, "-I", os.path.join(ROOT, "tests", "host")]
+                   "-I", os.path.join(HOST, "stubs"), "-I", INC, "-I", os.path.join(ROOT, "src", "priiloader", "tls", "include"), "-I", os.path.join(ROOT, "tests", "host")]
             if os.environ.get("HC_ASAN"):
                 cmd.append("-fsanitize=address")
             cmd += [os.path.join(HOST, "test_http.cpp"), parser, "-o", exe]

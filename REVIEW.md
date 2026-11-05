@@ -55,6 +55,17 @@ Checked with host tests (`tests/test_host_installer.py`, `tests/test_host_priilo
 
 Owner decisions still open: the Y+X×4 password backdoor is kept (now memory-safe); argument blocks over 8192 bytes are refused.
 
+### Updater and speed (2026-11-04)
+
+Settings and autoboot speed are in commit 50c4ba8, the TLS layer in f390a80; the updater change on top of them is pending (not committed). Checked with host tests (`tests/test_host_http.py` 37 cases, `tests/test_host_update.py` 19 cases, `tests/test_host_tls.py`), a clean build with no warnings, and a Dolphin run of `tests/dolphin/update_probe` (real HTTPS to GitHub). Not yet run on a Wii.
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Feature | `HttpGetUrl` (https and http, redirects across hosts, https to http refused, chunked refused, a body without `Content-Length` over https must end with close_notify). `HttpGet` for the DacoTaco server behaves as before. | `test_http`; the 21 old cases pass on the new parser and on the old one |
+| Feature | GitHub update source (`update_github.cpp`): bounded JSON reader, tag format, release choice, sha256 digest required, changelog from the release notes. `Update from:` setting, default GitHub. Convention in `docs/updates.md`. | `test_update`; `update_probe` in Dolphin: our repository (no releases, 2 byte reply), the Mbed-TLS release list (48224 bytes), a download through the github.com to release-assets.githubusercontent.com redirect (88 bytes and 5473689 bytes) matching GitHub's digest, a corrupted copy refused |
+| Finding | Every GitHub reply seen in Dolphin had a `Content-Length` and ended with close_notify (api.github.com, github.com 302 with `Content-Length: 0`, release-assets.githubusercontent.com). The close-delimited path is covered by host tests only. | `update_probe` log |
+| Finding | Memory: `priiloader.dol` is 1076448 bytes (836576 before TLS, +239872). The base image still starts at 0x81330000 and ends (bss) at 0x814ba760, 3430560 bytes below the end of MEM1; the wrapper and payload end at 0x8010abe0. libc's heap peaked at 725856 bytes in the probe (all TLS work, MEM2 holds the downloads). Nothing collides. | objdump, DOL headers, `update_probe` |
+
 ### Setup: build and tools
 
 | Kind | Change | Check |
@@ -74,6 +85,14 @@ Not fixed: the boot content and the TMD are replaced by two separate renames, so
 Wii checks for the remaining-defect fixes: a System Menu boot on a vWii; a boot with ES_Identify (System Menu IOS off), the Gecko log showing one fakesign and one EsIdentify hit; a retail disc launch; the update check against the real server.
 
 Not fixed: `PatchIOSKernel` never counts its patches, so it always scans the whole range (its caller ignores the result). The changelog lines keep a leading newline for CRLF text.
+
+Wii checks for the updater and TLS (the owner at the Wii; a real Wii differs from Dolphin on all of these):
+
+- HTTPS on a real Wii: the clock (a Wii with the RTC wrong must say so, not fail with a certificate text), the entropy source (the jitter measurement `tls_entropy_get_stats` reports; Dolphin's timing is not the Wii's), how long connect and handshake take, heap use (the free MEM1 after bss is 3.4 MB).
+- An update install from GitHub: attended, with a fresh BootMii NAND backup. It needs a release with `Priiloader_Update.dol` (none exists yet; see `docs/updates.md`). Check the digest refusal with a wrong file as well.
+- Autoboot key wait timing after the speed changes (50c4ba8): the keys held at power-on must still be seen.
+
+Size: `priiloader.dol` is now about 1.07 MB (1076448 bytes), 240 KB of it for TLS (mbedTLS and the roots), on top of the 826368 to 838304 byte figures below.
 
 Speed (autoboot path):
 

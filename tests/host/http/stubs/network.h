@@ -35,6 +35,8 @@ s32 net_send(s32 s, const void* data, s32 size, u32 flags);
 s32 net_recv(s32 s, void* mem, s32 len, u32 flags);
 s32 net_close(s32 s);
 struct hostent* net_gethostbyname(const char* addrString);
+struct pollsd { s32 socket; u32 events; u32 revents; };
+s32 net_poll(struct pollsd* sds, s32 nsds, s32 timeout);
 #ifdef __cplusplus
 }
 #endif

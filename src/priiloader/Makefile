@@ -31,7 +31,11 @@ ENTRYPOINT	:=	0x81330000
 # options for code generation
 #---------------------------------------------------------------------------------
 
-CFLAGS		= -g -O2 -Wall $(MACHDEP) $(INCLUDE)
+# the GitHub repository the updater reads releases from (override: make UPDATE_GITHUB_OWNER=x UPDATE_GITHUB_REPO=y)
+export UPDATE_GITHUB_OWNER	?=	Monsterray
+export UPDATE_GITHUB_REPO	?=	priiloader-reborn
+UPDATEFLAGS	= -DUPDATE_GITHUB_OWNER=\"$(UPDATE_GITHUB_OWNER)\" -DUPDATE_GITHUB_REPO=\"$(UPDATE_GITHUB_REPO)\"
+CFLAGS		= -g -O2 -Wall $(MACHDEP) $(INCLUDE) $(MBEDFLAGS) $(UPDATEFLAGS)
 CXXFLAGS	= $(CFLAGS)
 CPPFLAGS 	= $(MACHDEP) $(INCLUDE)
 LDFLAGS		= -g $(MACHDEP) -Wl,-Map,$(notdir $@).map -Wl,--section-start,.init=$(ENTRYPOINT)
@@ -92,6 +96,8 @@ export OFILES	:=	$(addsuffix .o,$(BINFILES)) \
 #---------------------------------------------------------------------------------
 # build a list of include paths
 #---------------------------------------------------------------------------------
+# the mbedTLS headers and Priiloader's config for them (paths are made here: the build folder's make has another CURDIR)
+export MBEDFLAGS	:=	-I$(CURDIR)/../third_party/mbedtls/include -I$(CURDIR)/../third_party/mbedtls -DMBEDTLS_CONFIG_FILE=\"priiloader_mbedtls_config.h\"
 export INCLUDE	:=	$(foreach dir,$(INCLUDES), -iquote $(CURDIR)/$(dir)) \
 					$(foreach dir,$(LIBDIRS),-I$(dir)/include) \
 					-I$(CURDIR)/$(BUILD) \

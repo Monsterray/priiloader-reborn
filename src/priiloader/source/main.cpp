@@ -64,6 +64,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "gecko.h"
 #include "password.h"
 #include "HTTP_Parser.h"
+#include "update_github.h"
+#include "tls.h"
 #include "dvd.h"
 #include "titles.hpp"
 #include "DiscContent.h"
@@ -2012,6 +2014,132 @@ void AutoBootDol( void )
 
 	return;
 }
+#ifndef UPDATE_GITHUB_OWNER
+#define UPDATE_GITHUB_OWNER "Monsterray"
+#endif
+#ifndef UPDATE_GITHUB_REPO
+#define UPDATE_GITHUB_REPO "priiloader-reborn"
+#endif
+
+//two centered lines (about 46 characters fit on the screen), then a pause
+static void ShowUpdateError(std::string line1, std::string line2 = "")
+{
+	if(line1.size() > 46)
+		line1.resize(46);
+	if(line2.size() > 46)
+		line2.resize(46);
+	ClearScreen();
+	PrintFormat( 1, TEXT_OFFSET(line1.c_str()), 208, "%s", line1.c_str());
+	if(!line2.empty())
+		PrintFormat( 1, TEXT_OFFSET(line2.c_str()), 224, "%s", line2.c_str());
+	sleep(5);
+}
+
+//what a failed HttpGetUrl says on screen
+static void DescribeHttpFailure(s32 ret, std::string& line1, std::string& line2)
+{
+	line1 = HttpErrorText(ret);
+	line2 = "";
+	if(ret == HTTP_ERR_TLS)
+	{
+		int tlsError = GetLastTlsError();
+		if(tlsError == TLS_ERR_CLOCK || tlsError == TLS_ERR_CERT_EXPIRED || tlsError == TLS_ERR_CERT_NOT_YET_VALID)
+			line2 = "check the date and time of the Wii";
+	}
+	else if(ret == -10)
+	{
+		//GitHub's own words, such as its rate limit (HTTP 403 or 429), when the reply carried them
+		line1 = "GitHub answered HTTP " + std::to_string(GetLastHttpReply());
+		const char* body = GetLastHttpErrorBody();
+		line2 = gh_error_message(body, strlen(body), 46);
+	}
+	gprintf("update: %s (%d, tls %d, HTTP %d)", line1.c_str(), ret, GetLastTlsError(), GetLastHttpReply());
+}
+
+static void GithubOptions(HttpOptions& opt, char* userAgent, size_t size)
+{
+	snprintf(userAgent, size, "priiloader-reborn/%d.%d.%d", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
+	opt = HttpOptions();
+	opt.userAgent = userAgent;
+	opt.maxHeaderLine = 4096; //the CDN's redirect addresses are long
+}
+
+//asks GitHub for the releases of the repository and picks the newest release and release candidate.
+//false (and the two lines for the screen filled) when that failed. Having no releases is not a failure.
+static bool FetchGithubReleases(GhPick& prod, GhPick& rc, std::string& line1, std::string& line2)
+{
+	const std::string url = std::string("https://api.github.com/repos/") + UPDATE_GITHUB_OWNER + "/" + UPDATE_GITHUB_REPO + "/releases?per_page=30";
+	char userAgent[64];
+	HttpOptions opt;
+	GithubOptions(opt, userAgent, sizeof(userAgent));
+	opt.accept = "application/vnd.github+json";
+	opt.maxBody = GH_MAX_JSON;
+	opt.errorBody = 4096; //a rate limit answer (HTTP 403 or 429) says why in its JSON
+
+	u8* json = NULL;
+	s32 size = HttpGetUrl(url.c_str(), &opt, json);
+	if(size <= 0 || json == NULL)
+	{
+		if(size < 0)
+			DescribeHttpFailure(size, line1, line2);
+		else
+		{
+			line1 = "GitHub sent an empty reply";
+			line2 = "";
+		}
+		mem_free(json);
+		return false;
+	}
+
+	std::vector<GhRelease> releases;
+	std::string message;
+	int parsed = gh_parse_releases(reinterpret_cast<const char*>(json), size, releases, &message);
+	mem_free(json);
+	if(parsed != GH_PARSE_OK)
+	{
+		gprintf("update: releases not understood (%d) %s", parsed, message.c_str());
+		line1 = parsed == GH_PARSE_NOT_ARRAY && !message.empty() ? "GitHub says: " + gh_ascii_line(message, 33) : "the release list is not readable";
+		line2 = "";
+		return false;
+	}
+
+	gh_select(releases, prod, rc);
+	return true;
+}
+
+//downloads the update DOL of a release and checks it against the digest GitHub lists. The size, or a negative number
+//(the lines for the screen filled) when that failed or the file is not the one the digest names.
+static s32 DownloadGithubUpdate(const GhPick& pick, u8*& buffer, std::string& line1, std::string& line2)
+{
+	char userAgent[64];
+	HttpOptions opt;
+	GithubOptions(opt, userAgent, sizeof(userAgent));
+	//the DOL is at most 16 MB: 600 s allows that at an average of 28 KB/s, where the 120 s of the small files would not
+	opt.deadlineMs = 600000;
+
+	s32 size = HttpGetUrl(pick.url.c_str(), &opt, buffer);
+	if(size < 0)
+	{
+		DescribeHttpFailure(size, line1, line2);
+		return size;
+	}
+	if(size == 0 || buffer == NULL)
+	{
+		line1 = "the update file is empty";
+		line2 = "";
+		return -1;
+	}
+	if(!gh_check_digest(buffer, size, pick.digest.c_str()))
+	{
+		gprintf("update: digest check failed, wanted %s", pick.digest.c_str());
+		line1 = "the download does not match its sha256";
+		line2 = "update refused";
+		return -1;
+	}
+	gprintf("update: sha256 matches %s", pick.digest.c_str());
+	return size;
+}
+
 void CheckForUpdate()
 {
 	ClearScreen();
@@ -2028,8 +2156,23 @@ void CheckForUpdate()
 	UpdateStruct UpdateFile = {}; //stays all zero when the fetch fails: the empty hash check below catches that
 	s32 file_size = 0;
 	u8* buffer = NULL;
+	const bool github = SGetSetting(SETTING_UPDATESOURCE) == UPDATESOURCE_GITHUB;
+	GhPick ghProd, ghRc;
 
-	try
+	if(github)
+	{
+		std::string line1, line2;
+		if(!FetchGithubReleases(ghProd, ghRc, line1, line2))
+		{
+			ShowUpdateError(line1, line2);
+			net_deinit();
+			return;
+		}
+		//having no release at all is normal: the menu then says "No version updates"
+		UpdateFile.prod_version = ghProd.version;
+		UpdateFile.rc_version = ghRc.version;
+	}
+	else try
 	{
 		file_size = HttpGet("www.dacotaco.com", "/priiloader/versionV2.bin", buffer, NULL);
 		s16 httpReply = GetLastHttpReply();
@@ -2047,7 +2190,7 @@ void CheckForUpdate()
 			case -4:
 				throw "update file error: connection error " + std::to_string(file_size);
 				break;
-			case -7:
+			case -10: //any reply but a 200 or a redirect
 				throw "update file error: HTTP " + std::to_string(GetLastHttpReply());
 				break;
 			default:
@@ -2078,7 +2221,7 @@ void CheckForUpdate()
 	mem_free(buffer);
 	auto shaHash = UpdateFile.prod_sha1_hash;
 	u32 emptyHash[5] = { 0 };
-	if(memcmp(shaHash, emptyHash, sizeof(emptyHash)) == 0)
+	if(!github && memcmp(shaHash, emptyHash, sizeof(emptyHash)) == 0)
 	{
 		gprintf("update file is empty");
 		PrintFormat( 1, TEXT_OFFSET("error getting versions from server"), 224, "error getting versions from server");
@@ -2097,16 +2240,11 @@ void CheckForUpdate()
 	const s8 installVersion = 1;
 	const s8 installRC = 2;
 	//make a nice list of the updates
-	bool isCurrentRCVersion = VERSION_RC > 0;
-	bool VersionUpdates = smaller_version(VERSION, UpdateFile.prod_version) || (same_version(VERSION, UpdateFile.prod_version) && isCurrentRCVersion);
-
-	//to make the if short :
-	// - rc updates should be enabled
-	// - the current RCversion should be less then the online rc
-	// - the current version should < the rc OR the version == the rc IF a rc is installed
-	bool RCUpdates = SGetSetting(SETTING_SHOWRCUPDATES) && 
-						((smaller_version(VERSION, UpdateFile.rc_version) && !isCurrentRCVersion) || 
-						(same_version(VERSION, UpdateFile.rc_version) && VERSION_RC < UpdateFile.rc_version.sub_version));
+	//the rules are in update_github.cpp (host-tested against the ones that were here), both sources share them:
+	// - a release update: a newer version, or the same version when a rc is installed
+	// - a rc update: rc updates are enabled and the rc is a newer version while no rc is installed, or a newer rc of this version
+	bool VersionUpdates = (!github || ghProd.status != GH_PICK_NONE) && update_prod_available(VERSION, UpdateFile.prod_version);
+	bool RCUpdates = (!github || ghRc.status != GH_PICK_NONE) && update_rc_available(VERSION, UpdateFile.rc_version, SGetSetting(SETTING_SHOWRCUPDATES) != 0);
 	try
 	{
 		ClearScreen();
@@ -2188,6 +2326,14 @@ void CheckForUpdate()
 		return;
 	}
 
+	const GhPick& ghPick = downloadVersion == installRC ? ghRc : ghProd;
+	if(github && ghPick.status != GH_PICK_OK)
+	{
+		ShowUpdateError(ghPick.status == GH_PICK_NO_ASSET ? "this release has no " GH_UPDATE_ASSET_NAME : "this release has no sha256 digest", "update refused");
+		net_deinit();
+		return;
+	}
+
 	bool confirmed = false;
 	try
 	{
@@ -2199,9 +2345,23 @@ void CheckForUpdate()
 			? "/priiloader/changelog_beta.txt"
 			: "/priiloader/changelog.txt";
 		
-		file_size = HttpGet("www.dacotaco.com", changelogFile, buffer, NULL);
-		if(file_size < 0)
-			throw "changelog error " + std::to_string(file_size) + "/" + std::to_string(GetLastHttpReply());
+		if(github)
+		{
+			//the release notes are in the release list already. the text ends in a newline, and one more is added:
+			//the code below turns the last byte into the terminator
+			const std::string text = gh_format_changelog(ghPick.tag, ghPick.body, 62) + "\n";
+			buffer = static_cast<u8*>(mem_malloc(text.size()));
+			if(buffer == NULL)
+				throw "changelog error: out of memory";
+			memcpy(buffer, text.data(), text.size());
+			file_size = text.size();
+		}
+		else
+		{
+			file_size = HttpGet("www.dacotaco.com", changelogFile, buffer, NULL);
+			if(file_size < 0)
+				throw "changelog error " + std::to_string(file_size) + "/" + std::to_string(GetLastHttpReply());
+		}
 		if(file_size == 0 || buffer == NULL)
 			throw "changelog error: empty file";
 
@@ -2326,40 +2486,55 @@ void CheckForUpdate()
 		else
 			PrintFormat( 1, TEXT_OFFSET("downloading   .  ..."), 208, "downloading %d.%d.%d ...", UpdateFile.prod_version.major, UpdateFile.prod_version.minor, UpdateFile.prod_version.patch);
 
-		file_size = HttpGet("www.dacotaco.com", filename, buffer, NULL);
-		switch(file_size)
+		if(github)
 		{
-			case -1:
-			case -2:
-			case -3:
-			case -4:
-				throw "update error: connection error " + std::to_string(file_size);
-				break;
-			case -7:
-				throw "update error: HTTP " + std::to_string(GetLastHttpReply());
-				break;
-			default:
-				if(file_size < 0)
-					throw "update error: " + std::to_string(file_size);
-				if(file_size == 0 || buffer == NULL)
-					throw "update error: empty file";
-				break;
+			std::string line1, line2;
+			file_size = DownloadGithubUpdate(ghPick, buffer, line1, line2);
+			if(file_size <= 0)
+			{
+				ShowUpdateError(line1, line2);
+				net_deinit();
+				mem_free(buffer);
+				return;
+			}
+		}
+		else
+		{
+			file_size = HttpGet("www.dacotaco.com", filename, buffer, NULL);
+			switch(file_size)
+			{
+				case -1:
+				case -2:
+				case -3:
+				case -4:
+					throw "update error: connection error " + std::to_string(file_size);
+					break;
+				case -10: //any reply but a 200 or a redirect
+					throw "update error: HTTP " + std::to_string(GetLastHttpReply());
+					break;
+				default:
+					if(file_size < 0)
+						throw "update error: " + std::to_string(file_size);
+					if(file_size == 0 || buffer == NULL)
+						throw "update error: empty file";
+					break;
+			}
+
+			u32 FileHash[5] ATTRIBUTE_ALIGN(32) = {};
+			SHA_Init();
+			if ( SHA_Calculate(buffer, file_size, FileHash) < 0)
+				throw "failed to compute hash of update";
+
+			auto onlineHash = downloadVersion == installRC
+				? UpdateFile.rc_sha1_hash
+				: UpdateFile.prod_sha1_hash;
+			gprintf("Downloaded Update : %08X %08X %08X %08X %08X", FileHash[0], FileHash[1], FileHash[2], FileHash[3], FileHash[4]);
+			gprintf("Online : %08X %08X %08X %08X %08X", onlineHash[0], onlineHash[1], onlineHash[2], onlineHash[3], onlineHash[4]);
+
+			if(memcmp(FileHash, onlineHash, sizeof(FileHash)) != 0)
+				throw "File not the same : hash check failure!";
 		}
 
-		u32 FileHash[5] ATTRIBUTE_ALIGN(32) = {};
-		SHA_Init();
-		if ( SHA_Calculate(buffer, file_size, FileHash) < 0)
-			throw "failed to compute hash of update";
-
-		auto onlineHash = downloadVersion == installRC
-			? UpdateFile.rc_sha1_hash
-			: UpdateFile.prod_sha1_hash;
-		gprintf("Downloaded Update : %08X %08X %08X %08X %08X", FileHash[0], FileHash[1], FileHash[2], FileHash[3], FileHash[4]);
-		gprintf("Online : %08X %08X %08X %08X %08X", onlineHash[0], onlineHash[1], onlineHash[2], onlineHash[3], onlineHash[4]);
-
-		if(memcmp(FileHash, onlineHash, sizeof(FileHash)) != 0)
-			throw "File not the same : hash check failure!";
-		
 		//Load the dol
 		//---------------------------------------------------
 		ClearScreen();
