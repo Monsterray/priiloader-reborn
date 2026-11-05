@@ -21,7 +21,7 @@ SHARED			:=	../Shared
 SOURCES			:=	source $(SHARED)
 LOADER			:=  ../loader
 DATA			:=	data
-INCLUDES		:=  include $(SHARED) ../loader/include
+INCLUDES		:=  include $(SHARED) ../loader/include tls/include
 #---------------------------------------------------
 # note : do not change entrypoint without testing booting SM, dol/elf &nd game content.
 # it will fuck one or the other up
@@ -39,7 +39,10 @@ LDFLAGS		= -g $(MACHDEP) -Wl,-Map,$(notdir $@).map -Wl,--section-start,.init=$(E
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-lwiikeyboard -ldb -lwiiuse -lbte -ltinyxml2 -lfat -logc
+# TLS: libpriitls.a and libmbedtls.a are archives, so nothing is linked until the code calls tls_open().
+# They are built first by the root Makefile (src/priiloader/tls, src/third_party/mbedtls).
+TLSLIBS	:=	$(CURDIR)/tls/build $(CURDIR)/../third_party/mbedtls/build
+LIBS	:=	-lpriitls -lmbedtls -lwiikeyboard -ldb -lwiiuse -lbte -ltinyxml2 -lfat -logc
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -98,6 +101,7 @@ export INCLUDE	:=	$(foreach dir,$(INCLUDES), -iquote $(CURDIR)/$(dir)) \
 # build a list of library paths
 #---------------------------------------------------------------------------------
 export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib) \
+					$(foreach dir,$(TLSLIBS),-L$(dir)) \
 					-L$(LIBOGC_LIB)
 
 .PHONY: $(BUILD) clean rebuild pre_build post_build GenerateVersion
