@@ -171,14 +171,15 @@ void DeletePriiloaderFiles(InstallerAction action)
 	bool password = false;
 	bool main_bin = false;
 	bool ticket = false;
+	//an update keeps the settings and the password: LoadSettings migrates an older settings file (upstream deleted
+	//both on every update, which also reset the autoboot setting). install and remove clear them as before.
 	switch(action)
 	{
 		case InstallerAction::Remove: //remove
 			main_bin = true;
 			ticket = true;
-		case InstallerAction::Install: //install	
+		case InstallerAction::Install: //install
 			hacks = true;
-		case InstallerAction::Update: //update	
 			settings = true;
 			password = true;
 		default:

@@ -431,6 +431,31 @@ static void test_update_ok(void)
 	check_fds();
 }
 
+// an update keeps the settings and the password (upstream deleted them: a Wii's autoboot setting was lost on every
+// update, seen on the bench Wii 2026-11-05); install and remove still clear them
+#define SETTINGS_FILE "/title/00000001/00000002/data/loader.ini"
+#define PASSWORD_FILE "/title/00000001/00000002/data/password.txt"
+static void test_update_keeps_settings(void)
+{
+	world_updatable();
+	const std::vector<uint8_t> ini(32, 1), pass(4, 'a');
+	g_nand.put(SETTINGS_FILE, ini);
+	g_nand.put(PASSWORD_FILE, pass);
+	Result r = run_flow(InstallerAction::Update, false);
+	CHECK(!r.threw, "update failed: %s", r.message.c_str());
+	CHECK(g_nand.get(SETTINGS_FILE) && *g_nand.get(SETTINGS_FILE) == ini, "the update deleted or changed loader.ini");
+	CHECK(g_nand.get(PASSWORD_FILE) && *g_nand.get(PASSWORD_FILE) == pass, "the update deleted password.txt");
+	check_fds();
+
+	world_updatable();
+	g_nand.put(SETTINGS_FILE, ini);
+	g_nand.put(PASSWORD_FILE, pass);
+	r = run_flow(InstallerAction::Remove, false);
+	CHECK(!r.threw, "remove failed: %s", r.message.c_str());
+	CHECK(!g_nand.exists(SETTINGS_FILE) && !g_nand.exists(PASSWORD_FILE), "remove kept the settings or the password");
+	check_fds();
+}
+
 static void test_remove_ok(void)
 {
 	world_updatable();
@@ -683,6 +708,7 @@ static const struct hc_test tests[] = {
 	{ "install_ok", test_install_ok, false },
 	{ "install_vwii_ok", test_install_vwii_ok, false },
 	{ "update_ok", test_update_ok, false },
+	{ "update_keeps_settings", test_update_keeps_settings, false },
 	{ "remove_ok", test_remove_ok, false },
 	{ "install_write_fails_keeps_copy", test_install_write_fails_keeps_copy, false },
 	{ "install_vwii_write_fails_keeps_copy", test_install_vwii_write_fails_keeps_copy, false },
