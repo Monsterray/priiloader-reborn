@@ -25,6 +25,7 @@ int sim_short_reads;
 int sim_alloc_fail_at;
 int sim_live_allocs;
 int sim_open_fds;
+int sim_isfs_calls;
 }
 
 u8 error;
@@ -67,6 +68,7 @@ extern "C" void sim_reset(void)
 	sim_alloc_fail_at = 0;
 	sim_live_allocs = 0;
 	sim_open_fds = 0;
+	sim_isfs_calls = 0;
 	error = 0;
 }
 
@@ -97,6 +99,7 @@ static SimHandle* handle_of(s32 fd, const char* what)
 
 extern "C" s32 ISFS_Open(const char* filepath, u8 mode)
 {
+	sim_isfs_calls++;
 	(void)mode;
 	if (g_files.find(filepath) == g_files.end())
 		return -106;
@@ -107,6 +110,7 @@ extern "C" s32 ISFS_Open(const char* filepath, u8 mode)
 
 extern "C" s32 ISFS_Close(s32 fd)
 {
+	sim_isfs_calls++;
 	SimHandle* h = handle_of(fd, "ISFS_Close");
 	h->open = false;
 	sim_open_fds--;
@@ -115,6 +119,7 @@ extern "C" s32 ISFS_Close(s32 fd)
 
 extern "C" s32 ISFS_Read(s32 fd, void* buffer, u32 length)
 {
+	sim_isfs_calls++;
 	SimHandle* h = handle_of(fd, "ISFS_Read");
 	if (((uintptr_t)buffer) % 32 != 0)
 		hc_hang("ISFS_Read into an unaligned buffer");
@@ -133,6 +138,7 @@ extern "C" s32 ISFS_Read(s32 fd, void* buffer, u32 length)
 
 extern "C" s32 ISFS_Write(s32 fd, const void* buffer, u32 length)
 {
+	sim_isfs_calls++;
 	SimHandle* h = handle_of(fd, "ISFS_Write");
 	std::vector<uint8_t>& d = g_files[h->path].data;
 	if (d.size() < h->pos + length)
@@ -144,6 +150,7 @@ extern "C" s32 ISFS_Write(s32 fd, const void* buffer, u32 length)
 
 extern "C" s32 ISFS_Seek(s32 fd, s32 where, s32 whence)
 {
+	sim_isfs_calls++;
 	SimHandle* h = handle_of(fd, "ISFS_Seek");
 	int64_t base = 0;
 	if (whence == 1)
@@ -159,6 +166,7 @@ extern "C" s32 ISFS_Seek(s32 fd, s32 where, s32 whence)
 
 extern "C" s32 ISFS_GetFileStats(s32 fd, fstats* status)
 {
+	sim_isfs_calls++;
 	SimHandle* h = handle_of(fd, "ISFS_GetFileStats");
 	if (sim_fail_stats && (!sim_fail_stats_path || h->path.find(sim_fail_stats_path) != std::string::npos))
 		return -1;
@@ -169,6 +177,7 @@ extern "C" s32 ISFS_GetFileStats(s32 fd, fstats* status)
 
 extern "C" s32 ISFS_CreateFile(const char* filepath, u8 attributes, u8 ownerperm, u8 groupperm, u8 otherperm)
 {
+	sim_isfs_calls++;
 	(void)attributes; (void)ownerperm; (void)groupperm; (void)otherperm;
 	g_files[filepath].data.clear();
 	return 0;
@@ -176,6 +185,7 @@ extern "C" s32 ISFS_CreateFile(const char* filepath, u8 attributes, u8 ownerperm
 
 extern "C" s32 ISFS_Delete(const char* filepath)
 {
+	sim_isfs_calls++;
 	return g_files.erase(filepath) ? 0 : -106;
 }
 

@@ -271,6 +271,191 @@ static void test_fat_long_lines(void)
 		}
 }
 
+/* ---- the parse of a file, as a digest, so the old line reader and the whole-file reader can be compared ----
+ * GOLDEN below was made with the line-by-line reader (git 626413a, GetLine: 32 bytes per ISFS_Read). */
+static uint64_t fnv(uint64_t h, const void* p, size_t n)
+{
+	const uint8_t* b = (const uint8_t*)p;
+	for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+	return h;
+}
+
+static uint64_t digest_hacks(void)
+{
+	uint64_t h = 1469598103934665603ULL;
+	for (const system_hack& k : system_hacks) {
+		h = fnv(h, k.desc.data(), k.desc.size()); h = fnv(h, "|", 1);
+		h = fnv(h, k.masterID.data(), k.masterID.size()); h = fnv(h, "|", 1);
+		h = fnv(h, k.requiredID.data(), k.requiredID.size()); h = fnv(h, "|", 1);
+		h = fnv(h, &k.min_version, sizeof(k.min_version));
+		h = fnv(h, &k.max_version, sizeof(k.max_version));
+		for (const system_patch& pt : k.patches) {
+			h = fnv(h, &pt.offset, sizeof(pt.offset));
+			h = fnv(h, pt.hash.data(), pt.hash.size()); h = fnv(h, "|", 1);
+			h = fnv(h, pt.patch.data(), pt.patch.size()); h = fnv(h, "#", 1);
+		}
+		h = fnv(h, "\n", 1);
+	}
+	return h;
+}
+
+struct golden_case { const char* name; std::string text; unsigned count; uint64_t digest; };
+
+static std::string real_hacks_ini(bool crlf)
+{
+	const char* root = getenv("HC_REPO_ROOT");
+	std::string path = std::string(root ? root : ".") + "/src/priiloader/hacks_hash.ini";
+	std::string out;
+	FILE* f = fopen(path.c_str(), "rb");
+	if (!f)
+		return out;
+	char buf[4096];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+		out.append(buf, n);
+	fclose(f);
+	if (crlf) {
+		std::string c;
+		for (char ch : out) { if (ch == '\n') c += '\r'; c += ch; }
+		out = c;
+	}
+	return out;
+}
+
+static std::vector<golden_case> golden_cases(void)
+{
+	std::string two = TWO_HACKS;
+	std::string crlf;
+	for (char ch : two) { if (ch == '\n') crlf += '\r'; crlf += ch; }
+	std::string nuls = two;
+	nuls[nuls.find("minversion") + 3] = 0;
+	std::vector<golden_case> v;
+	v.push_back({"real_lf", real_hacks_ini(false), 0, 0});
+	v.push_back({"real_crlf", real_hacks_ini(true), 0, 0});
+	v.push_back({"two", two, 0, 0});
+	v.push_back({"two_crlf", crlf, 0, 0});
+	v.push_back({"comments_and_spaces", "# a comment\n[First hack]  \n  minversion=480 # c\nmaxversion=610\n\tpatch = 0x38000001, 0x2c000000\noffset=0x81000000\n", 0, 0});
+	v.push_back({"blank_line_lf", "[First hack]\nminversion=480\n\nmaxversion=610\npatch=0x38000001\noffset=0x81000000\n[Second]\nminversion=480\nmaxversion=610\npatch=0x60000000\noffset=0x81000010\n", 0, 0});
+	v.push_back({"blank_line_crlf", "[First hack]\r\nminversion=480\r\n\r\nmaxversion=610\r\npatch=0x38000001\r\noffset=0x81000000\r\n", 0, 0});
+	v.push_back({"cr_only", "[First hack]\rminversion=480\rmaxversion=610\rpatch=0x38000001\roffset=0x81000000\r", 0, 0});
+	v.push_back({"nul_in_line", nuls, 0, 0});
+	v.push_back({"bad_line_inside", "[First hack]\nminversion=480\nmaxversion=610\nnonsense\npatch=0x38000001\noffset=0x81000000\n", 0, 0});
+	v.push_back({"master_require", "[M]\nmaster=ID1\nminversion=480\nmaxversion=610\npatch=0x1111\noffset=0x81000000\n[User]\nrequire=ID1\nminversion=480\nmaxversion=610\npatch=0x2222\noffset=0x81000004\n", 0, 0});
+	v.push_back({"block_edge_31", std::string("[A]\nminversion=480\nmaxversion=610\npatch=0x38000001\noffset=0x81000000\n#") + std::string(21, 'x') + "\n[B]\nminversion=480\nmaxversion=610\npatch=0x60000000\noffset=0x81000010\n", 0, 0});
+	/* around the 0x2000 byte limit of a line */
+	static const size_t sizes[] = {8190, 8191, 8192, 8193, 20000};
+	static char names[5 * 4][32];
+	int k = 0;
+	for (size_t n : sizes)
+		for (int nuls = 0; nuls < 2; nuls++)
+			for (int nl = 0; nl < 2; nl++, k++) {
+				snprintf(names[k], sizeof(names[k]), "long_%u_nul%d_nl%d", (unsigned)n, nuls, nl);
+				v.push_back({names[k], with_long_line(n, nuls != 0, nl != 0), 0, 0});
+			}
+	return v;
+}
+
+static const struct { const char* name; unsigned count; uint64_t digest; } GOLDEN[] = {
+	{ "real_lf", 75, 0x0c3cb70fa924c5c9ULL },
+	{ "real_crlf", 75, 0x0c3cb70fa924c5c9ULL },
+	{ "two", 2, 0xd0849c4e86c192aaULL },
+	{ "two_crlf", 2, 0xd0849c4e86c192aaULL },
+	{ "comments_and_spaces", 0, 0x14650fb0739d0383ULL },
+	{ "blank_line_lf", 1, 0xd2afbe992e557112ULL },
+	{ "blank_line_crlf", 0, 0x14650fb0739d0383ULL },
+	{ "cr_only", 0, 0x14650fb0739d0383ULL },
+	{ "nul_in_line", 1, 0x98d2e32d52a0485dULL },
+	{ "bad_line_inside", 1, 0x09435114a9753bceULL },
+	{ "master_require", 2, 0xaa7ee62d8eb5f857ULL },
+	{ "block_edge_31", 2, 0x645ede4fe5a6edabULL },
+	{ "long_8190_nul0_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8190_nul0_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8190_nul1_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8190_nul1_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8191_nul0_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8191_nul0_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8191_nul1_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8191_nul1_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8192_nul0_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8192_nul0_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8192_nul1_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8192_nul1_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8193_nul0_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8193_nul0_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_8193_nul1_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_8193_nul1_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_20000_nul0_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_20000_nul0_nl1", 0, 0x14650fb0739d0383ULL },
+	{ "long_20000_nul1_nl0", 0, 0x14650fb0739d0383ULL },
+	{ "long_20000_nul1_nl1", 0, 0x14650fb0739d0383ULL },
+};
+
+static void run_golden(bool nand, bool print)
+{
+	std::vector<golden_case> cases = golden_cases();
+	for (size_t i = 0; i < cases.size(); i++) {
+		setup();
+		if (nand) {
+			put_str(HACKS, cases[i].text);
+			LoadSystemHacks(StorageDevice::NAND);
+		} else {
+			load_fat(cases[i].text);
+			CHECK_OK();
+		}
+		uint64_t d = digest_hacks();
+		if (print) {
+			printf("\t{ \"%s\", %u, 0x%016llxULL },\n", cases[i].name, (unsigned)system_hacks.size(), (unsigned long long)d);
+			continue;
+		}
+		CHECK(strcmp(GOLDEN[i].name, cases[i].name) == 0, "golden table out of step at %u", (unsigned)i);
+		CHECK(system_hacks.size() == GOLDEN[i].count, "%s: %u hacks, the line reader found %u", cases[i].name, (unsigned)system_hacks.size(), GOLDEN[i].count);
+		CHECK(d == GOLDEN[i].digest, "%s: the parse differs from the line reader's (digest %016llx, was %016llx)", cases[i].name, (unsigned long long)d, (unsigned long long)GOLDEN[i].digest);
+		invariants();
+		CHECK_OK();
+	}
+}
+
+static void test_golden_nand(void)
+{
+	run_golden(true, getenv("HC_PRINT_GOLDEN") != NULL);
+}
+
+static void test_golden_fat(void)
+{
+	run_golden(false, false);
+}
+
+/* the real file must give hacks at all, or the comparison above proves nothing */
+static void test_real_file_is_big(void)
+{
+	std::string t = real_hacks_ini(false);
+	CHECK(t.size() > 20000, "hacks_hash.ini not found (HC_REPO_ROOT)");
+	put_str(HACKS, t);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(system_hacks.size() > 50, "only %u hacks", (unsigned)system_hacks.size());
+	invariants();
+}
+
+/* ISFS round trips to load the hacks of the real file: the line reader needed one read, one stats and one seek per line */
+static void test_isfs_calls(void)
+{
+	std::string t = real_hacks_ini(false);
+	put_str(HACKS, t);
+	LoadSystemHacks(StorageDevice::NAND);
+	printf("        ISFS calls to load %u hacks from %u bytes: %d\n", (unsigned)system_hacks.size(), (unsigned)t.size(), sim_isfs_calls);
+	CHECK(sim_isfs_calls <= 12, "%d ISFS calls", sim_isfs_calls);
+}
+
+static void test_too_big_file(void)
+{
+	std::string t = TWO_HACKS;
+	t += std::string(2 * 1024 * 1024, '#');
+	put_str(HACKS, t);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(system_hacks.empty(), "hacks from a file over the limit");
+	invariants();
+}
+
 static const struct hc_test tests[] = {
 	{ "valid_states", test_valid_states, false },
 	{ "states_for_other_version", test_states_for_other_version, false },
@@ -287,6 +472,11 @@ static const struct hc_test tests[] = {
 	{ "no_trailing_newline", test_valid_hacks_after_normal_lines, false },
 	{ "fat_valid", test_fat_valid, false },
 	{ "fat_long_lines", test_fat_long_lines, false },
+	{ "golden_nand", test_golden_nand, false },
+	{ "golden_fat", test_golden_fat, false },
+	{ "real_file_is_big", test_real_file_is_big, false },
+	{ "isfs_calls", test_isfs_calls, false },
+	{ "too_big_file", test_too_big_file, false },
 };
 
 int main(int argc, char** argv)

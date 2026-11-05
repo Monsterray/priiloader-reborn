@@ -39,6 +39,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <wiiuse/wpad.h>
 #include <ogc/sha.h>
 #include <ogc/usb.h>
+#include <ogc/lwp_watchdog.h>
 #include <ogc/machine/processor.h>
 #include <ogc/machine/asm.h>
 
@@ -485,6 +486,19 @@ void shellsort(u64 *a,int n)
 		}
 	}
 }
+//the text of an AUTOBOOTWAIT_* choice. padded to the same width, as the menu does not clear the line
+static const char* AutobootWaitText( u8 choice )
+{
+	switch( choice )
+	{
+		case AUTOBOOTWAIT_0MS:		return "0 ms  ";
+		case AUTOBOOTWAIT_100MS:	return "100 ms";
+		case AUTOBOOTWAIT_250MS:	return "250 ms";
+		case AUTOBOOTWAIT_500MS:
+		default:					return "500 ms";
+	}
+}
+
 void SetSettings( void )
 {
 	//clear screen and reset the background
@@ -885,18 +899,39 @@ void SetSettings( void )
 				}
 				break;
 			} 
-			case 14:
+			case 14: //how long autoboot looks for a key
+			{
+				if ( pressed & (INPUT_BUTTON_LEFT | INPUT_BUTTON_RIGHT | INPUT_BUTTON_A) )
+				{
+					if ( pressed & INPUT_BUTTON_LEFT )
+						settings->AutobootWait = (settings->AutobootWait == 0 || settings->AutobootWait >= AUTOBOOTWAIT_COUNT) ? AUTOBOOTWAIT_COUNT - 1 : settings->AutobootWait - 1;
+					else
+						settings->AutobootWait = (settings->AutobootWait + 1 >= AUTOBOOTWAIT_COUNT) ? 0 : settings->AutobootWait + 1;
+					redraw=true;
+				}
+				break;
+			}
+			case 15: //where the updater looks
+			{
+				if ( pressed & (INPUT_BUTTON_LEFT | INPUT_BUTTON_RIGHT | INPUT_BUTTON_A) )
+				{
+					settings->UpdateSource = (settings->UpdateSource == UPDATESOURCE_GITHUB) ? UPDATESOURCE_DACOTACO : UPDATESOURCE_GITHUB;
+					redraw=true;
+				}
+				break;
+			}
+			case 16:
 			{
 				if ( pressed & INPUT_BUTTON_A )
 				{
 					if( SaveSettings() )
-						PrintFormat( 1, 114, 128+(16*15), "save settings : done  ");
+						PrintFormat( 1, 114, 128+(16*16), "save settings : done  ");
 					else
-						PrintFormat( 1, 114, 128+(16*15), "save settings : failed");
+						PrintFormat( 1, 114, 128+(16*16), "save settings : failed");
 				}
 				break;
 			} 
-			case 15:
+			case 17:
 			{
 				if ( pressed & INPUT_BUTTON_A )
 				{
@@ -914,7 +949,7 @@ void SetSettings( void )
 			cur_off++;
 			if( (settings->UseSystemMenuIOS) && (cur_off == 13))
 				cur_off++;
-			if( cur_off >= 16)
+			if( cur_off >= 18)
 				cur_off = 0;
 			
 			redraw=true;
@@ -924,7 +959,7 @@ void SetSettings( void )
 			if( (settings->UseSystemMenuIOS) && (cur_off == 13))
 				cur_off--;
 			if( cur_off < 0 )
-				cur_off = 15;
+				cur_off = 17;
 			
 			redraw=true;
 		}
@@ -1026,8 +1061,10 @@ void SetSettings( void )
 			{
 				PrintFormat( cur_off==13, 0, 128+(16*12),	"                                        ");
 			}
-			PrintFormat( cur_off==14, 114, 128+(16*15), "save settings         ");
-			PrintFormat( cur_off==15, 114, 128+(16*16), "  Exit Menu");
+			PrintFormat( cur_off==14, 0, 128+(16*13), "     Autoboot key wait:          %s", AutobootWaitText(settings->AutobootWait) );
+			PrintFormat( cur_off==15, 0, 128+(16*14), "           Update from:          %s", settings->UpdateSource==UPDATESOURCE_DACOTACO?"DacoTaco":"GitHub  ");
+			PrintFormat( cur_off==16, 114, 128+(16*16), "save settings         ");
+			PrintFormat( cur_off==17, 114, 128+(16*17), "  Exit Menu");
 
 			redraw = false;
 		}
@@ -2475,12 +2512,13 @@ int main(int argc, char **argv)
 
 	SetDumpDebug(SGetSetting(SETTING_DUMPGECKOTEXT));
 	SetVideoInterfaceConfig(NULL);
-	s16 Bootstate = CheckBootState();
 	u32 GcShutdownFlag = *(reinterpret_cast<u32*>(0x80003164));
-	gprintf("BootState:%d", Bootstate );
 	memset(&system_state,0,sizeof(wii_state));
+	//state.dat is read once (open, read, close): the boot state is its type, or 0 when it can't be read whole
 	STACK_ALIGN(StateFlags, flags, 1, 32);
-	GetStateFlags(flags);
+	s32 stateRet = GetStateFlags(flags);
+	s16 Bootstate = (stateRet == 0) ? flags->type : 0;
+	gprintf("BootState:%d", Bootstate );
 	gprintf("Bootstate %u detected. DiscState %u ,ReturnTo %u & Flags %u & checksum %u (gcflag : 0x%08X)", flags->type, flags->discstate, flags->returnto, flags->flags, flags->checksum, GcShutdownFlag);
 	s8 magicWord = CheckMagicWords();
 
@@ -2536,11 +2574,23 @@ int main(int argc, char **argv)
 	WPAD_SetPowerButtonCallback(HandleWiiMoteEvent);
 	
 	//Give keyboard stack enough time to detect a keyboard and poll it. (~0.2s delay)
-	usleep(500000);
-	Input_ScanPads();
+	//The time is a setting (GetAutobootWaitMs). Look for a key until it is over, but at least once, and stop at B:
+	//a button seen in any scan counts, as a press is only reported by the scan it happens in
+	bool bPressed = false;
+	{
+		const u32 waitMs = GetAutobootWaitMs();
+		const u64 start = gettime();
+		do
+		{
+			Input_ScanPads();	//sleeps about 800 us itself
+			if( Input_ButtonsDown() & INPUT_BUTTON_B )
+				bPressed = true;
+		}
+		while( !bPressed && ticks_to_millisecs( diff_ticks( start, gettime() ) ) < waitMs );
+	}
 	
 	//Check reset button state, boot to priiloader if first time
-	if(!isFirstTimeUse && ((Input_ButtonsDown() & INPUT_BUTTON_B) == 0) && RESET_UNPRESSED == 1 && magicWord == 0)
+	if(!isFirstTimeUse && !bPressed && RESET_UNPRESSED == 1 && magicWord == 0)
 	{
 		//Check autoboot settings
 		switch( Bootstate )

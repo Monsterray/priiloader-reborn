@@ -29,6 +29,7 @@ extern int sim_alloc_fail_at;	/* the Nth (1 based) allocation from now fails */
 
 extern int sim_live_allocs;		/* blocks allocated and not freed */
 extern int sim_open_fds;		/* files opened and not closed */
+extern int sim_isfs_calls;		/* every ISFS_* call since sim_reset (a count of IOS round trips) */
 
 #ifdef __cplusplus
 }

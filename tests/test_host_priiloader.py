@@ -6,7 +6,8 @@ against a simulated NAND (ISFS) and a heap that guards every block; mem2_manager
 Skipped when no clang++ is found. hacks.cpp, settings.cpp and mem2_manager.c can be swapped for another copy
 (HC_PRIILOADER_HACKS, HC_PRIILOADER_SETTINGS, HC_PRIILOADER_MEM2 = path, e.g. from git show HEAD:...) to
 check that the tests fail on the code they were written against. HC_ASAN=1 adds AddressSanitizer
-(not to the 32 bit mem2 test).
+(not to the 32 bit mem2 test). The tests that read files of the repository (hacks_hash.ini and
+hacksh_s.ini in test_hacks, docs/settings.ini in test_settings) find it through HC_REPO_ROOT, which this sets.
 """
 import os
 import shutil
@@ -54,6 +55,7 @@ class HostPriiloaderTests(unittest.TestCase):
             build = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             env = dict(os.environ)
+            env["HC_REPO_ROOT"] = ROOT.replace("\\", "/")
             if os.name == "nt":
                 # AddressSanitizer's runtime DLL sits in LLVM's own folders
                 llvm = os.path.dirname(cxx) if os.path.dirname(cxx) else ""

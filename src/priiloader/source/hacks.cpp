@@ -36,8 +36,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "mem2_manager.h"
 #include "mount.h"
 
-#define BLOCK_SIZE ALIGN32(32)
-
 std::vector<system_hack> system_hacks;
 std::vector<u8> states_hash;
 
@@ -70,137 +68,113 @@ std::string trim(const std::string& str)
     return str.substr(first, (last - first + 1));
 }
 
-//we use our own GetLine instead of ifstream because ifstream would increase priiloader's size with 300KB...
-//and eventhough not perfect, this works fine too
-bool GetLine(bool reading_nand, std::string& line, u32 fileSize)
+//the longest line (and the biggest block of text without a newline) we accept
+#define HACKS_MAX_LINE 0x2000
+//the biggest hacks file we read. the real one is about 30 KB. a bigger file is not parsed: the System Menu then boots without hacks
+#define HACKS_MAX_FILE_SIZE (1024*1024)
+#define HACKS_BLOCK_SIZE 32
+
+//we use our own line reader instead of ifstream because ifstream would increase priiloader's size with 300KB...
+//the file is read into memory once, this reads the next line from it. it keeps the behaviour of the reader that used to read
+//the file in 32 byte blocks from NAND/SD: the text read for a line is cut at the first NUL, a line ending is \n or \r
+//(an empty first segment falls back to the \r split), and a line of HACKS_MAX_LINE bytes or more ends the reading.
+//pos is moved past the line; returns false at the end of the data, on an empty line or on a line that is too long
+static bool GetLine(const u8* data, u32 size, u32& pos, std::string& line)
 {
-	char* buf = NULL;	
-	std::string read_line;
+	line.clear();
+	const u32 start = pos;
 	u32 read_cnt = 0;
-	u32 file_pos = 0;
-	const u16 max_size = 0x2000;
+	u32 scanned = 0;		//bytes of the read text looked at for a line ending
+	bool ending = false;	//a \n or \r was seen before any NUL
+	bool nul = false;		//a NUL was seen: the rest is hidden, like it was from strstr
 
-	//Read untill a newline is found
-	try
+	while( start < size && start + read_cnt < size && !ending )
 	{
-		//get current file position
-		if (reading_nand)
-		{	
-			STACK_ALIGN(fstats, status, 1, 32);
-			memset(status, 0, sizeof(fstats));
-			ISFS_GetFileStats(nand_file_handler, status);
-			file_pos = status->file_pos;
-		}
-		else
+		//are we dealing with a potential overflow?
+		if( read_cnt >= HACKS_MAX_LINE )
 		{
-			file_pos = ftell(fat_file_handler);
-		}
-
-		buf = static_cast<char*>(mem_align(32,max_size+1));
-		if (!buf)
-		{
-			error = ERROR_MALLOC;
-			throw "error allocating buffer";
-		}
-		memset(buf,0,max_size+1);
-		DCFlushRange(buf, max_size+1);
-
-		//read untill we have a newline or reach EOF
-		while (
-				file_pos < fileSize &&
-				file_pos+read_cnt < fileSize &&
-				strstr(buf, "\n") == NULL && 
-				strstr(buf, "\r") == NULL
-			)
-		{	
-			//are we dealing with a potential overflow?
-			if (read_cnt >= max_size)
-				throw "line to long";
-
-			char* addr = buf + read_cnt;
-			u32 len = (file_pos+BLOCK_SIZE < fileSize) ? BLOCK_SIZE : fileSize-(file_pos+read_cnt);
-			//never read past the buffer, whatever is in the file (a NUL stops strstr, so the newline checks can't be relied on)
-			if (len > max_size - read_cnt)
-				len = max_size - read_cnt;
-			s32 ret = 0;
-
-			if (reading_nand)
-				ret = ISFS_Read(nand_file_handler, addr, len );
-			else
-				ret = fread( addr, sizeof( char ), len, fat_file_handler );
-
-			if(ret <= 0)
-			{
-				std::string err = "Error reading from ";
-				err.append(reading_nand?"NAND":"SD");
-				err.append(" (" + std::to_string(ret) + ")");
-				throw err;
-			}
-
-			//flush memory so we are not hitting cache with the read data
-			//we do +1 so any null terminator is also flushed
-			DCFlushRange(addr, ALIGN32(ret+1));
-			read_cnt += ret;
-
-			if(strnlen(buf,max_size+1) >= max_size)
-				throw "buf has overflown";
-		}
-
-		//nothing was read
-		if(!buf)
-		{
-			line = "";
+			gprintf("GetLine Exception : line to long");
 			return false;
 		}
-
-		read_line = std::string(buf);
-		mem_free(buf);
-
-		//find the newline and split the string
-		std::string cut_string = read_line.substr(0,read_line.find("\n"));
-		if(cut_string.length() == 0)
-			cut_string = read_line.substr(0,read_line.find("\r"));
-
-		//set the new file position untill after the \r\n, \r or \n
-		file_pos += cut_string.size()+1;
-
-		//cut off any carriage returns
-		if(cut_string.size() > 0 && cut_string.back() == '\r')
-			cut_string.pop_back();
-		if(cut_string.size() > 0 && cut_string.front() == '\r')
-			cut_string.erase(0, 1);
-
-		line = cut_string;
-
-		//seek file back correctly
-		if (reading_nand)
-		{	
-			ISFS_Seek(nand_file_handler, file_pos, SEEK_SET);
-		}
-		else
+		u32 len = size - (start + read_cnt);
+		if( len > HACKS_BLOCK_SIZE )
+			len = HACKS_BLOCK_SIZE;
+		if( len > HACKS_MAX_LINE - read_cnt )
+			len = HACKS_MAX_LINE - read_cnt;
+		read_cnt += len;
+		while( scanned < read_cnt && !nul && !ending )
 		{
-			fseek( fat_file_handler, file_pos, SEEK_SET);
+			u8 c = data[start + scanned];
+			if( c == 0 )
+				nul = true;
+			else
+			{
+				scanned++;
+				if( c == '\n' || c == '\r' )
+					ending = true;
+			}
 		}
-		return line.length() > 0;
+		//the text, up to its first NUL, is as long as the longest line there can be
+		if( read_cnt >= HACKS_MAX_LINE && memchr(data + start, 0, read_cnt) == NULL )
+		{
+			gprintf("GetLine Exception : buf has overflown");
+			return false;
+		}
 	}
-	catch (char const* ex)
-	{
-		gprintf("GetLine Exception : %s",ex);
-	}
-	catch (const std::string& ex)
-	{
-		gprintf("GetLine Exception : %s",ex.c_str());
-	}
-	catch(...)
-	{	
-		gprintf("GetLine General Exception");
-	}
+	//the text up to the first NUL, or all of what was read
+	u32 text_len = read_cnt;
+	const u8* nulpos = (read_cnt > 0) ? static_cast<const u8*>(memchr(data + start, 0, read_cnt)) : NULL;
+	if( nulpos != NULL )
+		text_len = static_cast<u32>(nulpos - (data + start));
+	std::string read_line(reinterpret_cast<const char*>(data + start), text_len);
 
-	if (buf)
-		mem_free(buf);
-	line = "";
-	return false;
+	//find the newline and split the string
+	std::string cut_string = read_line.substr(0,read_line.find("\n"));
+	if(cut_string.length() == 0)
+		cut_string = read_line.substr(0,read_line.find("\r"));
+	//set the new position untill after the \r\n, \r or \n
+	pos = start + static_cast<u32>(cut_string.size()) + 1;
+	//cut off any carriage returns
+	if(cut_string.size() > 0 && cut_string.back() == '\r')
+		cut_string.pop_back();
+	if(cut_string.size() > 0 && cut_string.front() == '\r')
+		cut_string.erase(0, 1);
+	line = cut_string;
+	return line.length() > 0;
 }
+
+//reads the whole file in one go. the buffer has a NUL after the data. returns NULL (error is set when it ran out of memory)
+//when the file cannot be read in full
+static u8* ReadHacksFile(bool reading_nand, u32 fileSize)
+{
+	u8* buf = static_cast<u8*>(mem_align(32, ALIGN32(fileSize+1)));
+	if (!buf)
+	{
+		error = ERROR_MALLOC;
+		gprintf("LoadHacks : could not allocate %u bytes", fileSize);
+		return NULL;
+	}
+	memset(buf, 0, ALIGN32(fileSize+1));
+	s32 ret = -1;
+	if (reading_nand)
+	{
+		ret = ISFS_Read(nand_file_handler, buf, fileSize);
+	}
+	else
+	{
+		size_t cnt = fread(buf, 1, fileSize, fat_file_handler);
+		ret = static_cast<s32>(cnt);
+	}
+	if (ret != static_cast<s32>(fileSize))
+	{
+		gprintf("LoadHacks : reading the hacks file failed (%d of %u bytes)", ret, fileSize);
+		mem_free(buf);
+		return NULL;
+	}
+	DCFlushRange(buf, ALIGN32(fileSize+1));
+	return buf;
+}
+
 bool _processLine(system_hack& hack, std::string &line)
 {
 	try
@@ -495,11 +469,33 @@ static s8 _loadSystemHacks(StorageDevice source)
 		return 0;
 	}
 
+	if (fileSize > HACKS_MAX_FILE_SIZE)
+	{
+		gprintf("LoadHacks : the hacks file is too big (%u bytes)", fileSize);
+		fileSize = 0;
+	}
+	//read the whole file in one go, close it and parse from memory
+	u8* fileData = (fileSize > 0) ? ReadHacksFile(source == StorageDevice::NAND, fileSize) : NULL;
+	if (source == StorageDevice::NAND)
+	{
+		if (nand_file_handler >= 0)
+			ISFS_Close(nand_file_handler);
+		nand_file_handler = -1;
+	}
+	else
+	{
+		if (fat_file_handler)
+			fclose(fat_file_handler);
+		fat_file_handler = NULL;
+	}
+	if (fileData == NULL)
+		return 0;
+
 	//Process File
 	std::string line;
+	u32 filePos = 0;
 	system_hack new_hack;
-
-	while (GetLine(source == StorageDevice::NAND, line, fileSize))
+	while (GetLine(fileData, fileSize, filePos, line))
 	{
 		//Specs of this loop/function : 
 		// - read the line and put it in the correct part of the hack
@@ -532,18 +528,7 @@ static s8 _loadSystemHacks(StorageDevice source)
 	//add or reject the last hack we were working on
 	_addOrRejectHack(new_hack);
 
-	//cleanup on aisle 4
-	if (source == StorageDevice::NAND)
-	{
-		ISFS_Close(nand_file_handler);
-		nand_file_handler = -1;
-	}
-	else
-	{
-		if(fat_file_handler)
-			fclose(fat_file_handler);
-		fat_file_handler = NULL;
-	}
+	mem_free(fileData);
 
 	//Load the states_hash
 	nand_file_handler = ISFS_Open("/title/00000001/00000002/data/hacksh_s.ini", 1|2);

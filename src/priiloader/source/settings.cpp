@@ -43,6 +43,8 @@ static void SetDefaultSettings( void )
 	settings->UseSystemMenuIOS = 1;
 	settings->autoboot = AUTOBOOT_SYS;
 	settings->BlackBackground = 1;
+	settings->AutobootWait = AUTOBOOTWAIT_DEFAULT;
+	settings->UpdateSource = UPDATESOURCE_DEFAULT;
 }
 
 //writes the default settings to a new file. returns 1 on success, a negative number on failure (error is set)
@@ -62,9 +64,9 @@ static s32 Create_Settings_File( void )
 		error = ERROR_SETTING_OPEN;
 		return fd;
 	}
-	s32 written = ISFS_Write( fd, settings, sizeof( Settings ) );
+	s32 written = ISFS_Write( fd, settings, SETTINGS_FILE_SIZE );
 	ISFS_Close( fd );
-	if( written != (s32)sizeof( Settings ) )
+	if( written != (s32)SETTINGS_FILE_SIZE )
 	{
 		error = ERROR_SETTING_WRITE;
 		return written < 0 ? written : -1;
@@ -105,11 +107,46 @@ u32 SGetSetting( u32 s )
 			return settings->PasscheckMenu;
 		case SETTING_SHOWRCUPDATES:
 			return settings->ShowRCUpdates;
+		case SETTING_AUTOBOOTWAIT:
+			return settings->AutobootWait;
+		case SETTING_UPDATESOURCE:
+			return settings->UpdateSource;
 		default:
 			return 0;
 		break;
 	}
 }
+
+//the time to look for a key before an autoboot decision, in ms. a value that is not one of the choices gives the default
+u32 GetAutobootWaitMs( void )
+{
+	u32 choice = (settings == NULL) ? AUTOBOOTWAIT_DEFAULT : settings->AutobootWait;
+	switch( choice )
+	{
+		case AUTOBOOTWAIT_0MS:
+			return 0;
+		case AUTOBOOTWAIT_100MS:
+			return 100;
+		case AUTOBOOTWAIT_250MS:
+			return 250;
+		case AUTOBOOTWAIT_500MS:
+		default:
+			return 500;
+	}
+}
+
+//writes the settings to the file at the size they have now. the file was opened for reading, so it is opened again for writing.
+//best effort: the settings in memory are right either way. returns true when it was written
+static bool WriteSettingsFile( void )
+{
+	s32 fd = ISFS_Open("/title/00000001/00000002/data/loader.ini", ISFS_OPEN_RW );
+	if( fd < 0 )
+		return false;
+	bool ok = ISFS_Seek( fd, 0, 0 ) >= 0 && ISFS_Write( fd, settings, SETTINGS_FILE_SIZE ) == (s32)SETTINGS_FILE_SIZE;
+	ISFS_Close( fd );
+	return ok;
+}
+
 LoadSettingsResult LoadSettings( void )
 {
 	if(settings == NULL)
@@ -140,31 +177,48 @@ LoadSettingsResult LoadSettings( void )
 		error = ERROR_SETTING_READ;
 		return LOADSETTINGS_FAIL;
 	}
-	if ( status->file_length != sizeof(Settings) )
+	u32 file_length = status->file_length;
+	if ( file_length != SETTINGS_FILE_SIZE && file_length != SETTINGS_FILE_SIZE_V1 )
 	{
 		ISFS_Close(fd);
-		gprintf("LoadSettings : status->file_length != struct size , resetting...");
+		gprintf("LoadSettings : the file is %u bytes, not a size we know , resetting...", file_length);
 		//recreate settings file
 		ISFS_Delete("/title/00000001/00000002/data/loader.ini");
 		return Create_Settings_File() > 0 ? LOADSETTINGS_INI_CREATED : LOADSETTINGS_FAIL;
 	}
 
-	if(ISFS_Read( fd, settings, sizeof( Settings ) ) != (s32)sizeof( Settings ))
+	if(ISFS_Read( fd, settings, file_length ) != (s32)file_length)
 	{
 		ISFS_Close( fd );
 		SetDefaultSettings();
 		error = ERROR_SETTING_READ;
 		return LOADSETTINGS_FAIL;
 	}
+	ISFS_Close( fd );
+
+	bool rewrite = false;
+	if( file_length == SETTINGS_FILE_SIZE_V1 )
+	{
+		//an older layout: keep the settings it has, the new ones get their defaults. the rest of its 32 bytes is padding
+		u8 old[SETTINGS_V1_USED_SIZE];
+		memcpy( old, settings, SETTINGS_V1_USED_SIZE );
+		SetDefaultSettings();
+		memcpy( settings, old, SETTINGS_V1_USED_SIZE );
+		gprintf("LoadSettings : migrated the settings file from %u to %u bytes", (u32)SETTINGS_FILE_SIZE_V1, (u32)SETTINGS_FILE_SIZE);
+		rewrite = true;
+	}
+	//what is behind the last field is never a setting
+	memset( settings->LegacyPadding, 0, sizeof( settings->LegacyPadding ) );
+	memset( reinterpret_cast<u8*>( settings ) + SETTINGS_FILE_SIZE, 0, sizeof( Settings ) - SETTINGS_FILE_SIZE );
+
 	if( settings->version == 0 || settings->version != VERSION_MERGED || settings->RCVersion != VERSION_RC )
 	{
 		settings->version = VERSION_MERGED;
 		settings->RCVersion = VERSION_RC;
-		//best effort: the in memory settings are right either way
-		if( ISFS_Seek( fd, 0, 0 ) < 0 || ISFS_Write( fd, settings, sizeof( Settings ) ) != (s32)sizeof( Settings ) )
-			gprintf("LoadSettings : updating the settings version failed");
+		rewrite = true;
 	}
-	ISFS_Close( fd );
+	if( rewrite && !WriteSettingsFile() )
+		gprintf("LoadSettings : updating the settings file failed");
 	return LOADSETTINGS_OK;
 }
 int SaveSettings( void )
@@ -185,11 +239,11 @@ int SaveSettings( void )
 
 	ISFS_Seek( fd, 0, 0 );
 
-	s32 r = ISFS_Write( fd, settings, sizeof( Settings ) );
+	s32 r = ISFS_Write( fd, settings, SETTINGS_FILE_SIZE );
 	
 	ISFS_Close( fd );
 
-	if( r == sizeof( Settings ) )
+	if( r == (s32)SETTINGS_FILE_SIZE )
 		return 1;
 	error = ERROR_SETTING_WRITE;
 	return r;

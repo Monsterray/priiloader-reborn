@@ -395,6 +395,8 @@ s8 PatchIOSKernel(std::vector<IosPatch> patches)
 		return -2;
 
 	gprintf("Patching IOS kernel...");
+	//SRAMADDR is a physical address : read it byte by byte through ReadRegister8 (the uncached mapping), never directly.
+	//before, patchesFound was never incremented, so the scan never stopped early and always returned 0
 	u32 patchesFound = 0;
 	u8* mem_block = reinterpret_cast<u8*>(SRAMADDR(0xFFFF0000));
 	while ((u32)mem_block < SRAMADDR(0xFFFFFFFF))
@@ -414,6 +416,7 @@ s8 PatchIOSKernel(std::vector<IosPatch> patches)
 
 			//Apply patch
 			iosPatch.Patch(mem_block);
+			patchesFound++;
 
 			//flush cache
 			u8* address = (u8*)(((u32)mem_block) >> 5 << 5);
@@ -429,5 +432,6 @@ s8 PatchIOSKernel(std::vector<IosPatch> patches)
 	}
 
 	WriteRegister16(0x0d8b420a, 1);
-	return patchesFound;
+	//the result is an s8 and negative means failure : don't let a long scan wrap
+	return patchesFound > 127 ? 127 : patchesFound;
 }
