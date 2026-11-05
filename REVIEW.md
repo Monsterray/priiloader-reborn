@@ -16,6 +16,20 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ## Findings
 
+### Wii checks: HTTPS and the updater (2026-11-04)
+
+Run on two Wiis (dev 192.168.8.213 and lrwii 192.168.8.243, both from HBC, network and NAND reads only) with `tests/dolphin/tls_probe` and `tests/dolphin/update_probe` built with `NETLOG=1`. Jobs `20261104-214142-*`, `20261104-215059-2918a1`, `20261104-215818-*`.
+
+| Kind | Change | Check |
+| --- | --- | --- |
+| Fix | `tls.c` `wait_socket`: a real Wii's IOS answers a `net_poll` for POLLOUT only when its timeout ends, even when the socket is ready (a 250 ms poll on a connect that took 18 to 41 ms returned ready after 250 ms; Dolphin answers at once). The connect waited the whole 20 s (probe) or 15 s (updater) timeout; github.com then answered, api.github.com closed the idle connection (`MBEDTLS_ERR_SSL_CONN_EOF`), so the updater never worked on a Wii. Polls now last at most 10 ms, repeated until the timeout. | before: api.github.com failed on both Wiis, github.com 20391 to 21468 ms, badssl hosts dropped at random; after: api.github.com 822 ms, github.com 991 ms, `tls_probe` and `update_probe` PASS on both |
+| Finding | Read waits (POLLIN) wake early on the Wii: with the 20 s connect poll the handshake still ended about 0.3 to 1.4 s after it. `HTTP_Parser.cpp`'s plain sockets only wait to read; left as they are. | `tls_probe` timings |
+| Finding | Crypto on the Wii: one P-256 scalar multiplication 16 ms, one P-384 40 ms (`MBEDTLS_ECP_WINDOW_SIZE 2`). Not worth tuning. | `tls_probe` timings |
+| Finding | Entropy on the Wii from a DOL launched by HBC: 256 timing samples around 64 NAND reads, 62 to 65 distinct low bytes; ES_Sign -1017 (as in Dolphin), MAC and device id read. Enough for the generator to seed; ES_Sign inside the installed Priiloader is still unchecked. | `tls_probe` entropy line |
+| Finding | Updater on the Wii: our release list (no releases, "no updates") in about 830 ms; the github.com 302 to release-assets.githubusercontent.com chain works; 5473689 bytes in 11 to 17 s, digest matches, a corrupted copy is refused. Every reply had a `Content-Length` and ended with close_notify, as in Dolphin. Heap high-water 724508 bytes. | `update_probe` on both Wiis |
+| Finding | The Wii's clock is its local time (about 4 h off UTC here); certificate dates still check. | probe clock lines |
+| Tools | The probes build with `make NETLOG=1` (output to `hbc.py run` through hbc-reborn's `sdk/hbc_netlog.h`) and close the log before `net_deinit`. | jobs above |
+
 ### Remaining defects (2026-11-04)
 
 Checked with host tests (`tests/test_host_http.py`, `tests/test_host_priiloader.py`, also under ASan), a clean build with no warnings, and an independent read-only review. Not yet run on a Wii.
@@ -57,7 +71,7 @@ Owner decisions still open: the Y+X×4 password backdoor is kept (now memory-saf
 
 ### Updater and speed (2026-11-04)
 
-Settings and autoboot speed are in commit 50c4ba8, the TLS layer in f390a80; the updater change on top of them is pending (not committed). Checked with host tests (`tests/test_host_http.py` 37 cases, `tests/test_host_update.py` 19 cases, `tests/test_host_tls.py`), a clean build with no warnings, and a Dolphin run of `tests/dolphin/update_probe` (real HTTPS to GitHub). Not yet run on a Wii.
+Settings and autoboot speed are in commit 50c4ba8, the TLS layer in f390a80, the updater in 06de1a4. Checked with host tests (`tests/test_host_http.py` 37 cases, `tests/test_host_update.py` 19 cases, `tests/test_host_tls.py`), a clean build with no warnings, and a Dolphin run of `tests/dolphin/update_probe` (real HTTPS to GitHub). Not yet run on a Wii.
 
 | Kind | Change | Check |
 | --- | --- | --- |
@@ -84,23 +98,15 @@ Not fixed: the boot content and the TMD are replaced by two separate renames, so
 
 Wii checks for the remaining-defect fixes: a System Menu boot on a vWii; a boot with ES_Identify (System Menu IOS off), the Gecko log showing one fakesign and one EsIdentify hit; a retail disc launch; the update check against the real server.
 
-Not fixed: `PatchIOSKernel` never counts its patches, so it always scans the whole range (its caller ignores the result). The changelog lines keep a leading newline for CRLF text.
+Not fixed: the changelog lines keep a leading newline for CRLF text. (`PatchIOSKernel` now counts its patches and stops at the first, 50c4ba8.)
 
-Wii checks for the updater and TLS (the owner at the Wii; a real Wii differs from Dolphin on all of these):
+Wii checks for the updater and TLS that are left (HTTPS itself passed on two Wiis, see above):
 
-- HTTPS on a real Wii: the clock (a Wii with the RTC wrong must say so, not fail with a certificate text), the entropy source (the jitter measurement `tls_entropy_get_stats` reports; Dolphin's timing is not the Wii's), how long connect and handshake take, heap use (the free MEM1 after bss is 3.4 MB).
 - An update install from GitHub: attended, with a fresh BootMii NAND backup. It needs a release with `Priiloader_Update.dol` (none exists yet; see `docs/updates.md`). Check the digest refusal with a wrong file as well.
+- HTTPS from the installed Priiloader (booted from NAND, not HBC): ES_Sign there, and a Wii whose clock is wrong must say so, not fail with a certificate text.
 - Autoboot key wait timing after the speed changes (50c4ba8): the keys held at power-on must still be seen.
 
-Size: `priiloader.dol` is now about 1.07 MB (1076448 bytes), 240 KB of it for TLS (mbedTLS and the roots), on top of the 826368 to 838304 byte figures below.
-
-Speed (autoboot path):
-
-- A fixed `usleep(500000)` before every autoboot decision (main.cpp ~2509).
-- `state.dat` read twice (`CheckBootState`, then `GetStateFlags`).
-- The hacks file is read 32 bytes per ISFS call on every System Menu boot.
-
-Size (priiloader.dol is 838304 bytes; 826368 before these fixes):
+Size (priiloader.dol was 838304 bytes before TLS, 826368 before these fixes; TLS added about 240 KB):
 
 - About 95 KB of exception tables (`.eh_frame`, `.eh_frame_hdr`); the code has 89 `try`/`catch` lines, so dropping exceptions is a refactor.
 - `wii_font_Bitmap` is 97280 bytes.

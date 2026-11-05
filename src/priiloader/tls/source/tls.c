@@ -3,6 +3,7 @@
  */
 #include <gccore.h>
 #include <network.h>
+#include <ogc/lwp_watchdog.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdlib.h>
@@ -89,21 +90,36 @@ void tls_shutdown(void)
 	shared.ready = 0;
 }
 
+//one poll of at most this long. a real Wii's IOS answers a poll for POLLOUT only when its timeout ends, even when the
+//socket was ready at once (a connect polled with 250 ms took 250 ms; Dolphin answers at once). with one poll for the
+//whole timeout every TLS connect took 20 s, and api.github.com closed the idle connection before the ClientHello.
+#define POLL_SLICE_MS 10
+
 //wait for the socket: events is POLLIN or POLLOUT. returns 1 ready, 0 timed out, negative on a socket error.
 static int wait_socket(s32 sock, u32 events, uint32_t timeout_ms)
 {
-	struct pollsd sd;
-	sd.socket = sock;
-	sd.events = events;
-	sd.revents = 0;
-	s32 r = net_poll(&sd, 1, (s32)timeout_ms);
-	if (r < 0)
-		return -1;
-	if (r == 0)
-		return 0;
-	if (sd.revents & (POLLERR | POLLNVAL))
-		return -1;
-	return 1;
+	const u64 start = gettime();
+	for (;;)
+	{
+		u32 elapsed = ticks_to_millisecs(diff_ticks(start, gettime()));
+		if (elapsed >= timeout_ms)
+			return 0;
+		u32 slice = timeout_ms - elapsed;
+		if (slice > POLL_SLICE_MS)
+			slice = POLL_SLICE_MS;
+		struct pollsd sd;
+		sd.socket = sock;
+		sd.events = events;
+		sd.revents = 0;
+		s32 r = net_poll(&sd, 1, (s32)slice);
+		if (r < 0)
+			return -1;
+		if (r == 0)
+			continue;
+		if (sd.revents & (POLLERR | POLLNVAL))
+			return -1;
+		return 1;
+	}
 }
 
 static int bio_send(void* ctx, const unsigned char* buf, size_t len)

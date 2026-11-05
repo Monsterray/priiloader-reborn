@@ -12,11 +12,17 @@ include $(DEVKITPPC)/wii_rules
 ROOT	:= $(CURDIR)/../../..
 TLS		:= $(ROOT)/src/priiloader/tls
 MBEDTLS	:= $(ROOT)/src/third_party/mbedtls
-TARGET	:= tls_probe
-BUILD	:= build
+# NETLOG=1: a bench build (tls_probe_netlog.dol) that also sends its output to hbc.py run, through
+# hbc-reborn's sdk/hbc_netlog.h (HBC_SDK)
+HBC_SDK	?= $(ROOT)/../hbc-reborn/sdk
+TARGET	:= tls_probe$(if $(NETLOG),_netlog)
+BUILD	:= build$(if $(NETLOG),_netlog)
 
 CFLAGS	:= -g -O2 -Wall -Wextra $(MACHDEP) -iquote $(TLS)/include -I$(MBEDTLS) -I$(MBEDTLS)/include \
 		-DMBEDTLS_CONFIG_FILE='"priiloader_mbedtls_config.h"' -I$(LIBOGC_INC)
+ifneq ($(NETLOG),)
+CFLAGS	+= -DPROBE_NETLOG -iquote $(HBC_SDK)
+endif
 LDFLAGS	:= -g $(MACHDEP) -Wl,-Map,$(BUILD)/$(TARGET).map -Wl,--gc-sections
 LIBS	:= $(TLS)/build/libpriitls.a $(MBEDTLS)/build/libmbedtls.a -lfat -logc -lm
 LIBPATH	:= -L$(LIBOGC_LIB)

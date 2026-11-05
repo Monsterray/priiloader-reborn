@@ -23,6 +23,9 @@
 #include <malloc.h>
 #include <string>
 #include <vector>
+#ifdef PROBE_NETLOG
+#include "hbc_netlog.h"
+#endif
 #include "HTTP_Parser.h"
 #include "update_github.h"
 #include "mem2_manager.h"
@@ -252,6 +255,9 @@ int main(void)
 	int pass = 1;
 
 	video_init();
+#ifdef PROBE_NETLOG
+	hbc_netlog_init();
+#endif
 	SYS_STDIO_Report(false);
 	say("UPDATEPROBE: start");
 	AddMem2Area(14 * 1024 * 1024, OTHER_AREA);
@@ -340,6 +346,9 @@ int main(void)
 		(unsigned)mi.arena, (unsigned)mi.uordblks, (unsigned)SYS_GetArena1Lo(), (unsigned)SYS_GetArena1Hi());
 	say("UPDATEPROBE: RESULT %s", pass ? "PASS" : "FAIL");
 	tls_shutdown();
+#ifdef PROBE_NETLOG
+	hbc_netlog_close();
+#endif
 	net_deinit();
 	return pass ? 0 : 1;
 }

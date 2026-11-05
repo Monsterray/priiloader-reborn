@@ -17,8 +17,13 @@
 #include <string.h>
 #include <time.h>
 #include <malloc.h>
+#ifdef PROBE_NETLOG
+#include "hbc_netlog.h"
+#endif
 #include "tls.h"
 #include "tls_internal.h"
+#include <poll.h>
+#include "mbedtls/ecp.h"
 
 #define FIRST_BYTES 300
 
@@ -51,6 +56,103 @@ static void video_init(void)
 	VIDEO_WaitVSync();
 	if (rmode->viTVMode & VI_NON_INTERLACE)
 		VIDEO_WaitVSync();
+}
+
+//timing of each network step on its own, outside the TLS layer: name lookup, a non-blocking connect polled in 250 ms
+//steps (each poll's result is shown), a blocking connect
+static void net_timing(const char* host)
+{
+	u64 t0 = gettime();
+	struct hostent* he = net_gethostbyname(host);
+	u64 t1 = gettime();
+	if (he == NULL || he->h_addr_list == NULL || he->h_addr_list[0] == NULL)
+	{
+		say("TLSPROBE: timing %s: lookup failed after %u ms", host, (unsigned)ticks_to_millisecs(t1 - t0));
+		return;
+	}
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_len = 8;
+	addr.sin_port = htons(443);
+	memcpy(&addr.sin_addr, he->h_addr_list[0], 4);
+	u32 a = addr.sin_addr.s_addr;
+	say("TLSPROBE: timing %s: lookup %u ms -> %u.%u.%u.%u", host, (unsigned)ticks_to_millisecs(t1 - t0),
+		(unsigned)(a >> 24) & 0xff, (unsigned)(a >> 16) & 0xff, (unsigned)(a >> 8) & 0xff, (unsigned)a & 0xff);
+
+	s32 sock = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	s32 f = net_fcntl(sock, 4 /* F_SETFL */, 0x04 /* IOS O_NONBLOCK */);
+	t0 = gettime();
+	s32 r = net_connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+	t1 = gettime();
+	say("TLSPROBE: timing %s: non-blocking (fcntl %d) connect returned %d after %u ms", host, (int)f, (int)r,
+		(unsigned)ticks_to_millisecs(t1 - t0));
+	for (int i = 0; i < 40; i++)
+	{
+		struct pollsd sd;
+		sd.socket = sock;
+		sd.events = POLLOUT;
+		sd.revents = 0;
+		u64 p0 = gettime();
+		s32 pr = net_poll(&sd, 1, 250);
+		u64 p1 = gettime();
+		if (pr != 0 || i < 2 || i % 8 == 0)
+			say("TLSPROBE: timing %s: poll %d returned %d revents 0x%x after %u ms (%u ms since connect)", host, i, (int)pr,
+				(unsigned)sd.revents, (unsigned)ticks_to_millisecs(p1 - p0), (unsigned)ticks_to_millisecs(p1 - t0));
+		if (pr != 0)
+			break;
+	}
+	s32 soerr = 0;
+	socklen_t len = sizeof(soerr);
+	s32 gr = net_getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &len);
+	say("TLSPROBE: timing %s: SO_ERROR getsockopt %d value %d", host, (int)gr, (int)soerr);
+	net_close(sock);
+
+	sock = net_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	t0 = gettime();
+	r = net_connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+	t1 = gettime();
+	say("TLSPROBE: timing %s: blocking connect returned %d after %u ms", host, (int)r, (unsigned)ticks_to_millisecs(t1 - t0));
+	net_close(sock);
+}
+
+static int probe_rng(void* ctx, unsigned char* out, size_t len)
+{
+	u32* s = (u32*)ctx;
+	for (size_t i = 0; i < len; i++)
+	{
+		*s ^= *s << 13;
+		*s ^= *s >> 17;
+		*s ^= *s << 5;
+		out[i] = (unsigned char)*s;
+	}
+	return 0;
+}
+
+//the CPU cost of the handshake's largest steps: one P-256 and one P-384 scalar multiplication
+static void crypto_timing(void)
+{
+	static const mbedtls_ecp_group_id ids[] = { MBEDTLS_ECP_DP_SECP256R1, MBEDTLS_ECP_DP_SECP384R1 };
+	for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); i++)
+	{
+		mbedtls_ecp_group grp;
+		mbedtls_mpi d;
+		mbedtls_ecp_point q;
+		u32 seed = 0x12345678u;
+		mbedtls_ecp_group_init(&grp);
+		mbedtls_mpi_init(&d);
+		mbedtls_ecp_point_init(&q);
+		u64 t0 = gettime();
+		int r = mbedtls_ecp_group_load(&grp, ids[i]);
+		if (r == 0)
+			r = mbedtls_ecp_gen_keypair(&grp, &d, &q, probe_rng, &seed);
+		u64 t1 = gettime();
+		say("TLSPROBE: timing crypto: %s key pair (one scalar multiplication) %u ms, result %d",
+			i == 0 ? "P-256" : "P-384", (unsigned)ticks_to_millisecs(t1 - t0), r);
+		mbedtls_ecp_point_free(&q);
+		mbedtls_mpi_free(&d);
+		mbedtls_ecp_group_free(&grp);
+	}
 }
 
 //GET path on host over TLS. returns 0 when the reply was read, else the TLS error.
@@ -142,6 +244,9 @@ int main(void)
 	int pass = 1;
 
 	video_init();
+#ifdef PROBE_NETLOG
+	hbc_netlog_init();
+#endif
 	SYS_STDIO_Report(false);
 	say("TLSPROBE: start");
 
@@ -162,6 +267,10 @@ int main(void)
 	char tbuf[64];
 	strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M:%S", gmtime(&now));
 	say("TLSPROBE: clock %s UTC (%lld)", tbuf, (long long)now);
+
+	net_timing("api.github.com");
+	net_timing("github.com");
+	crypto_timing();
 
 	u64 t0 = gettime();
 	int status_ok = 0;
@@ -198,6 +307,9 @@ int main(void)
 
 	say("TLSPROBE: RESULT %s", pass ? "PASS" : "FAIL");
 	tls_shutdown();
+#ifdef PROBE_NETLOG
+	hbc_netlog_close();
+#endif
 	net_deinit();
 	return pass ? 0 : 1;
 }

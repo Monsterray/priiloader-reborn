@@ -57,8 +57,11 @@ python tools/dolphin_run.py src/priiloader/priiloader.dol --seconds 60 --expect 
 
 ## Wii bench
 
-- Queue jobs only (`wii_targets.bench_wii()`), never a protected Wii.
-- Unattended jobs may run `priiloader.dol` from SD/HBC (it is only a menu then). Installing, updating or removing Priiloader writes NAND and needs the owner at the Wii with a fresh BootMii NAND backup.
+- Queue jobs only (`wii_targets.bench_wii()`), never a protected Wii. lrwii takes only `--wii lrwii` jobs and holds real data.
+- Do not run `priiloader.dol` from HBC on a Wii with another Priiloader installed: its `LoadSettings` rewrites `/title/00000001/00000002/data/loader.ini` (32 to 34 bytes, and the version fields), and the installed Priiloader then resets every setting, autoboot included (the bench's boot chain autoboots HBC). Installing, updating or removing Priiloader writes NAND and needs the owner at the Wii with a fresh BootMii NAND backup.
+- Unattended jobs may run the probes in `tests/dolphin` (network, NAND reads only). Build them with `make NETLOG=1` (`*_netlog.dol`, through hbc-reborn's `sdk/hbc_netlog.h`) and run them with `hbc.py run`, so their output reaches the PC:
+  `python <hbc-reborn>/tools/wii-bench/wiibench.py add --wii lrwii --timeout 480 -- python <hbc-reborn>/tools/hbc.py run --timeout 420 tests/dolphin/tls_probe/tls_probe_netlog.dol`
+- A real Wii's IOS differs from Dolphin: a `net_poll` for POLLOUT returns only when its timeout ends (Dolphin answers at once), and `SO_ERROR` answers -22 on both.
 
 ## Review and release
 

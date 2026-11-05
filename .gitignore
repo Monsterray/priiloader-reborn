@@ -28,6 +28,7 @@
 
 #build folders
 build
+build_netlog
 
 #wii keys and console data: never commit them
 /keys/*
