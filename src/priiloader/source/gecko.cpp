@@ -27,13 +27,25 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <string.h>
 #include <gccore.h>
 #include <ogc/usbgecko.h>
+#include <ogc/lwp_watchdog.h>
 #include <debug.h>
 
 #include "gecko.h"
 #include "mount.h"
+#include "gitrev.h"
 
 static u8 GeckoFound = 0;
 static u8 DumpDebug = 0;
+
+//Lines logged before the SD card is mounted (version, boot state, magic word...) wait here, and SetDumpDebug writes
+//them to prii.log first. Before, they were lost: the dump only starts once LoadSettings has read the setting.
+//Once SetDumpDebug has run the buffer is off for good.
+#define EARLY_LOG_SIZE 8192
+static char _earlyLog[EARLY_LOG_SIZE];
+static u32 _earlyLogLength = 0;
+static bool _earlyLogOn = true;
+//every line carries the milliseconds since priiloader's first line, to time each step of a boot
+static u64 _firstLineTicks = 0;
 
 bool IsUsbGeckoDetected()
 {
@@ -64,6 +76,7 @@ static void __write_str(const char* str, const u32 len)
 	
 	if (DumpDebug > 0 && GetMountedFlags() > 0)
 	{
+		//opened and closed per line, so a hang or RESET loses nothing that was logged
 		FILE* fd = fopen(BuildPath("/prii.log").c_str(), "ab");
 		if(fd != NULL)
 		{
@@ -71,12 +84,22 @@ static void __write_str(const char* str, const u32 len)
 			fclose(fd);
 		}
 	}
+	else if (_earlyLogOn && _earlyLogLength + len <= EARLY_LOG_SIZE)
+	{
+		memcpy(_earlyLog + _earlyLogLength, str, len);
+		_earlyLogLength += len;
+	}
 }
 
 void gprintf( const char *str, ... )
 {
-	if(!GeckoFound && (!DumpDebug || GetMountedFlags() <= 0))
+	if(!GeckoFound && !_earlyLogOn && (!DumpDebug || GetMountedFlags() <= 0))
 		return;
+
+	const u64 now = gettime();
+	if (_firstLineTicks == 0)
+		_firstLineTicks = now;
+	const u32 sinceFirst = ticks_to_millisecs(diff_ticks(_firstLineTicks, now));
 
 	//lets first compile the input
 	char* inputBuffer = NULL;
@@ -100,7 +123,7 @@ void gprintf( const char *str, ... )
 		}
 
 		inputBuffer = tmp;
-		length = snprintf(inputBuffer, bufferLength, "%02d:%02d:%02d : %s\r\n", localtm->tm_hour, localtm->tm_min, localtm->tm_sec, str);
+		length = snprintf(inputBuffer, bufferLength, "%02d:%02d:%02d +%6ums : %s\r\n", localtm->tm_hour, localtm->tm_min, localtm->tm_sec, sinceFirst, str);
 		if(length > 0 && length >= bufferLength)
 		{
 			bufferLength = length+1;
@@ -159,14 +182,29 @@ void SetDumpDebug( u8 value )
 	
 	//don't dump or no devices mounted?
 	if (!DumpDebug || GetMountedFlags() <= 0)
+	{
+		_earlyLogOn = false;
+		_earlyLogLength = 0;
 		return;
+	}
 	
-	//create file, or re-open and add lining
+	//create file, or re-open: a header for this boot, then what was logged before the mount
 	FILE* fd = fopen(BuildPath("/prii.log").c_str(), "ab");
 	if (fd != NULL)
 	{
-		const char str[] = "--------gecko_output_enabled------\r\n\0";
-		fwrite(str, 1, strlen(str), fd);
+		char header[160];
+		const int headerLength = snprintf(header, sizeof(header),
+			"\r\n======== priiloader %s: boot log (%u bytes logged before the mount) ========\r\n", GIT_REV_STR,
+			(unsigned)_earlyLogLength);
+		if (headerLength > 0)
+			fwrite(header, 1, (size_t)headerLength < sizeof(header) ? (size_t)headerLength : sizeof(header) - 1, fd);
+		if (_earlyLogLength > 0)
+			fwrite(_earlyLog, 1, _earlyLogLength, fd);
+		if (_earlyLogLength > EARLY_LOG_SIZE - 256)
+		{
+			const char full[] = "(early log buffer full: some early lines are missing)\r\n";
+			fwrite(full, 1, strlen(full), fd);
+		}
 		fclose(fd);
 	}
 	else
@@ -174,6 +212,8 @@ void SetDumpDebug( u8 value )
 		//we failed. fuck this shit
 		DumpDebug = 0;
 	}
+	_earlyLogOn = false;
+	_earlyLogLength = 0;
 
 	return;
 }

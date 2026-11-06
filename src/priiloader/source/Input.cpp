@@ -175,7 +175,9 @@ void Input_Shutdown( bool disconnectWPAD )
 		}
 	}	
 
+	gprintf("Input_Shutdown(%d): WPAD_Shutdown", disconnectWPAD);
 	WPAD_Shutdown();
+	gprintf("Input_Shutdown: WPAD down, keyboard next");
 
 	//signal thread to exit, if it would hang on a USBRead the close will cancel it.
 	kbd_should_quit = true;

@@ -2585,6 +2585,7 @@ void Autoboot_System( void )
   	if( SGetSetting(SETTING_PASSCHECKMENU) && SGetSetting(SETTING_AUTBOOT) != AUTOBOOT_DISABLED && SGetSetting(SETTING_AUTBOOT) != AUTOBOOT_ERROR )
  		password_check();
 
+	gprintf("Autoboot_System: autoboot %d", SGetSetting(SETTING_AUTBOOT));
 	switch( SGetSetting(SETTING_AUTBOOT) )
 	{
 		case AUTOBOOT_SYS:
@@ -2763,6 +2764,9 @@ int main(int argc, char **argv)
 		}
 		while( !bPressed && ticks_to_millisecs( diff_ticks( start, gettime() ) ) < waitMs );
 	}
+	gprintf("boot decision: autoboot %d, ReturnTo %d, ShutdownTo %d, key wait %u ms, B %d, RESET held %d, magic word %d, first use %d, bootstate %d, error %d",
+		SGetSetting(SETTING_AUTBOOT), SGetSetting(SETTING_RETURNTO), SGetSetting(SETTING_SHUTDOWNTO), (unsigned)GetAutobootWaitMs(),
+		bPressed, RESET_UNPRESSED == 0, magicWord, isFirstTimeUse, Bootstate, error);
 	
 	//Check reset button state, boot to priiloader if first time
 	if(!isFirstTimeUse && !bPressed && RESET_UNPRESSED == 1 && magicWord == 0)

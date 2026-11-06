@@ -639,14 +639,19 @@ void TitleInformation::LaunchTitle()
 			gprintf("no title name to use in play_rec");
 		}
 
+		gprintf("LaunchTitle : wc24 cleanup");
 		net_wc24cleanup();
+		gprintf("LaunchTitle : clearing the boot state");
 		ClearState();
+		gprintf("LaunchTitle : setting NANDBOOTINFO");
 		SetNandBootInfo();
+		gprintf("LaunchTitle : input shutdown");
 		Input_Shutdown(false);
-		ShutdownMounts();
 
-		gdprintf("waiting for drive to stop...");
+		//the SD card stays mounted until just before ES_LaunchTitle, so the log (Dump gecko text) sees every step
+		gprintf("LaunchTitle : waiting for the drive to stop");
 		DVDWaitAsync(DVD_WAIT_TIMEOUT_MS);
+		gprintf("LaunchTitle : drive done, video %s", system_state.Init ? "to black" : "not up");
 		if(system_state.Init)
 		{
 			VIDEO_SetBlack(true);
@@ -703,7 +708,15 @@ void TitleInformation::LaunchTitle()
 		}
 
 		SetVideoInterfaceConfig(this);
-		ES_LaunchTitle(_titleId, &views[0]);
+		gprintf("LaunchTitle : ES_LaunchTitle(%08X\\%08X), %u ticket views: unmounting, the log ends here if it works",
+			TITLE_UPPER(_titleId), TITLE_LOWER(_titleId), (unsigned)cnt);
+		ShutdownMounts();
+		const s32 launched = ES_LaunchTitle(_titleId, &views[0]);
+		//it came back: mount again (the mount thread needs a moment) so the log gets the error
+		InitMounts();
+		for (int wait = 0; wait < 100 && GetMountedFlags() <= 0; wait++)
+			usleep(10000);
+		gprintf("LaunchTitle : ES_LaunchTitle returned %d", launched);
 
 		//failed to launch title
 		InitVideo();
