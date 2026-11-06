@@ -2647,6 +2647,8 @@ int main(int argc, char **argv)
 	bool isFirstTimeUse = LoadSettings() == LOADSETTINGS_INI_CREATED;
 	if(SGetSetting(SETTING_DUMPGECKOTEXT) == 1)
 	{
+		//the card only: USB waits for the menu (a stuck drive stalls IOS, mount.cpp)
+		SetUsbMount(false);
 		InitMounts(_mountCallback);
 		//the log is wanted: give the mount thread up to 3 s for the card, so this boot's lines reach it before an
 		//autoboot unmounts it again (the lines wait in memory until then)
@@ -2876,6 +2878,7 @@ int main(int argc, char **argv)
 	}
 	
 	system_state.Init = 1;
+	SetUsbMount(true);
 	InitMounts(_mountCallback);
 	gprintf("FAT_Init():%d", GetMountedFlags());
 

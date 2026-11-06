@@ -44,6 +44,8 @@ extern "C" {
 
 void InitMounts(mountChangedCallback callback = NULL);
 void ShutdownMounts();
+//false: the mount thread leaves USB alone (the autoboot path: see mount.cpp)
+void SetUsbMount(bool allowed);
 std::string BuildPath(const char* path, StorageDevice device = StorageDevice::Auto);
 u8 GetMountedFlags();
 

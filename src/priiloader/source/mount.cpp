@@ -69,6 +69,12 @@ static bool _mutexInit = false;
 static lwp_t mnt_thread_handle = LWP_THREAD_NULL;
 static volatile bool quit_thread = false;
 static volatile bool thread_done = true;
+static volatile bool _usbAllowed = true;
+
+void SetUsbMount(bool allowed)
+{
+	_usbAllowed = allowed;
+}
 
 //this tells libdvm to not mount usb automatically, because they can be *very* slow in mounting...
 unsigned g_dvmOgcUsbMount = 0;
@@ -108,9 +114,16 @@ void _pollMount(void)
 
 	//one startup call per poll: it talks to the USB stack, and may never return. Outside the
 	//lock, and only the mount thread touches the USB state, so a stuck call stops only this thread.
-	const bool usbReady = __io_usbstorage.startup();
-	if (quit_thread)
-		return;
+	//Not at all before the menu: a stuck drive also stalled IOS's NAND access for as long as the
+	//call waited (26 and 58 s for state.dat, until the drive was unplugged), and an autoboot
+	//needs only the card.
+	bool usbReady = false;
+	if (_usbAllowed)
+	{
+		usbReady = __io_usbstorage.startup();
+		if (quit_thread)
+			return;
+	}
 
 	MutexLock mountLock(mountPointMutex);
 
