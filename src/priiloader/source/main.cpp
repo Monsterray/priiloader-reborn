@@ -2716,7 +2716,7 @@ int main(int argc, char **argv)
 	}
 
 	// before anything else, poll input devices such as keyboards to see if we should stop autoboot
-	r = Input_Init();
+	r = Input_Init(false);	//the USB keyboard starts with the menu (Input.cpp)
 	gprintf("Input_Init():%d", r );
 	
 	WPAD_SetPowerButtonCallback(HandleWiiMoteEvent);
@@ -2728,11 +2728,18 @@ int main(int argc, char **argv)
 	{
 		const u32 waitMs = GetAutobootWaitMs();
 		const u64 start = gettime();
+		u32 slow = 0;
 		do
 		{
+			const u64 t0 = gettime();
 			Input_ScanPads();	//sleeps about 800 us itself
+			const u32 scanMs = ticks_to_millisecs( diff_ticks( t0, gettime() ) );
 			if( Input_ButtonsDown() & INPUT_BUTTON_B )
 				bPressed = true;
+			const u32 allMs = ticks_to_millisecs( diff_ticks( t0, gettime() ) );
+			//a stall here kept the autoboot waiting (USB stuck): say where, a few times at most
+			if( allMs > 200 && slow++ < 5 )
+				gprintf("key wait: one pass took %u ms (scan %u ms)", allMs, scanMs);
 		}
 		while( !bPressed && ticks_to_millisecs( diff_ticks( start, gettime() ) ) < waitMs );
 	}
@@ -2879,6 +2886,7 @@ int main(int argc, char **argv)
 	
 	system_state.Init = 1;
 	SetUsbMount(true);
+	Input_StartKeyboard();
 	InitMounts(_mountCallback);
 	gprintf("FAT_Init():%d", GetMountedFlags());
 

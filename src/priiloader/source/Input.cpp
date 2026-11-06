@@ -36,6 +36,7 @@ struct timeval _last_press;
 struct timeval _time_init;
 static lwp_t kbd_handle = LWP_THREAD_NULL;
 static volatile bool kbd_should_quit = false;
+static bool _kbd_started = false;
 
 void KBEventHandler(USBKeyboard_event event) 
 {
@@ -132,20 +133,18 @@ void HandleSTMEvent(u32 event)
 	}
 	return;
 }
-s8 Input_Init( void ) 
+//The USB keyboard: its own start, so the autoboot can go without it. A USB drive left mid-transfer
+//by a reset (port power survives one) stalls IOS's USB stack until it is unplugged, and the
+//autoboot's key wait then stalled with it (38 s on the bench Wii, 2026-11-06).
+s8 Input_StartKeyboard( void )
 {
-	if(_input_init)
-		return 1;
+	if (!_input_init || _kbd_started)
+		return 0;
 
-	s8 r = PAD_Init();
-	r |= WPAD_Init();
-	gettimeofday(&_time_init, NULL);
+	s8 r = USB_Initialize();
+	r |= USBKeyboard_Initialize();
 
-	STM_RegisterEventHandler(HandleSTMEvent);
-	r |= USB_Initialize();
-	r |= USBKeyboard_Initialize();	
-
-	// Even if the thread fails to start, 
+	// Even if the thread fails to start,
 	kbd_should_quit = false;
 	LWP_CreateThread(	&kbd_handle,
 							kbd_thread,
@@ -153,8 +152,23 @@ s8 Input_Init( void )
 							NULL,
 							16*1024,
 							50);
+	_kbd_started = true;
+	return r;
+}
 
+s8 Input_Init( bool keyboard )
+{
+	if(_input_init)
+		return keyboard ? Input_StartKeyboard() | 1 : 1;
+
+	s8 r = PAD_Init();
+	r |= WPAD_Init();
+	gettimeofday(&_time_init, NULL);
+
+	STM_RegisterEventHandler(HandleSTMEvent);
 	_input_init = 1;
+	if (keyboard)
+		r |= Input_StartKeyboard();
 	return r;
 }
 void Input_Shutdown( bool disconnectWPAD )
@@ -183,16 +197,20 @@ void Input_Shutdown( bool disconnectWPAD )
 
 	//signal thread to exit, if it would hang on a USBRead the close will cancel it.
 	kbd_should_quit = true;
-	if(USBKeyboard_IsConnected())
-		USBKeyboard_Close();
-	
-	USBKeyboard_Deinitialize();	
+	if (_kbd_started)
+	{
+		if(USBKeyboard_IsConnected())
+			USBKeyboard_Close();
+
+		USBKeyboard_Deinitialize();
+	}
 
 	if (kbd_handle != LWP_THREAD_NULL) {
 		LWP_JoinThread(kbd_handle, NULL);
 		kbd_handle = LWP_THREAD_NULL;
 	}
 
+	_kbd_started = false;
 	_input_init = 0;
 }
 u32 Input_ScanPads( void )
