@@ -10,7 +10,7 @@ holds the installer, the hack list for the hacks menu, and a few optional files.
 | Path | Needed for | Example in this repository |
 |---|---|---|
 | `apps/priiloader/boot.dol` | installing, updating or removing Priiloader from HBC (it is the Installer) | `src/Installer/Installer.dol` after `make` |
-| `apps/priiloader/meta.xml`, `icon.png` | the Installer's HBC entry | written by `tools/make_sd.py`; `src/Installer/icon.png` |
+| `apps/priiloader/meta.xml`, `icon.png` | the Installer's HBC entry | `src/Installer/META_TEMPLATE.XML` (the build fills in the version); `src/Installer/icon.png` |
 | `apps/priiloader/hacks_hash.ini` | the hacks menu: Priiloader reads the hack list here first, and saves a copy to NAND | `src/priiloader/hacks_hash.ini` (the master list; the format is in `docs/HACKS.md`) |
 | `password.txt` | setting a password from Priiloader's Set Password menu (optional) | below |
 | `wii_secure.dol` | the DOL the password menu can install with the password (optional) | none |

@@ -48,9 +48,9 @@ The updater lists `GET /repos/<owner>/<repo>/releases?per_page=30` and chooses f
 There is no CI release job yet. As the maintainer, from a clean `develop` checkout:
 
 1. Build the whole tree from the devkitPro shell (`make`) and run `python -m unittest discover -s tests`. The version comes from `git describe` and `src/Shared/version.h` (`VERSION_MAJOR`, `VERSION_MINOR`, `VERSION_PATCH`, `VERSION_RC`): set these to the release first and commit.
-2. Make sure `src/Installer/Installer.dol` was built from that commit. Copy it to a file named `Priiloader_Update.dol`.
-3. Tag the commit `vX.Y.Z` (or `vX.Y.Z-rcN`) and push the tag.
-4. On GitHub create the release from that tag: write the notes, tick "pre-release" for a release candidate only, and upload `Priiloader_Update.dol`. GitHub computes the digest on upload; check on the release page (or `gh api repos/Monsterray/priiloader-reborn/releases`, field `assets[].digest`) that it shows `sha256:...` and that it equals `sha256sum Priiloader_Update.dol`.
+2. Tag the commit `vX.Y.Z` (or `vX.Y.Z-rcN`) and push the tag. Build again so the Installer's `meta.xml` carries the tag (`git describe`), then run `python tools/make_sd.py --release`: `dist/release` holds `Priiloader_Update.dol` (the Installer built from that commit), the SD card zip and `SHA256SUMS`.
+3. Only `Priiloader_Update.dol` is read by the updater; other assets are ignored.
+4. On GitHub create the release from that tag: write the notes, tick "pre-release" for a release candidate only, and upload the files in `dist/release`. GitHub computes the digest on upload; check on the release page (or `gh api repos/Monsterray/priiloader-reborn/releases`, field `assets[].digest`) that it shows `sha256:...` and that it equals `sha256sum Priiloader_Update.dol`.
 5. Do not leave it as a draft: drafts are skipped.
 6. Check with a Wii that is not the only one you have: `Check For Update` offers it, the changelog reads right, and the install runs (attended, with a fresh BootMii NAND backup: the install writes the NAND).
 

@@ -553,6 +553,44 @@ static void test_legacy_mismatch_kept(void)
 	invariants();
 }
 
+/* the hacks menu reads the card's list first: the old positions still belong to the list on NAND */
+static void test_legacy_against_nand_list(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	const char st[2] = {1, 0};
+	sim_put(STATES, st, 2);
+	std::string card = std::string(SWAPPED_HACKS) +
+		"[Third hack]\n"
+		"minversion=480\n"
+		"maxversion=610\n"
+		"patch=0x60000000\n"
+		"offset=0x81000020\n";
+	load_fat(card);
+	CHECK(system_hacks.size() == 3 && system_hacks[1].desc == "First hack", "unexpected card list");
+	CHECK(states_hash[0] == 0 && states_hash[1] == 1 && states_hash[2] == 0, "the old states were not read against the NAND list");
+	CHECK(get_str(NAMED_STATES).find("First hack\n") != std::string::npos, "not moved: '%s'", get_str(NAMED_STATES).c_str());
+	CHECK(sim_get(STATES, NULL) == NULL, "the old states file was kept");
+	invariants();
+}
+
+/* a state left on for a hack of another System Menu version does not turn on this version's hack of that name */
+static void test_legacy_other_version_entry(void)
+{
+	std::string t = std::string(TWO_HACKS) +
+		"[First hack]\n"
+		"minversion=700\n"
+		"maxversion=800\n"
+		"patch=0x60000000\n"
+		"offset=0x81000030\n";
+	put_str(HACKS, t);
+	const char st[3] = {0, 0, 1};
+	sim_put(STATES, st, 3);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(system_hacks.size() == 3, "%u hacks", (unsigned)system_hacks.size());
+	CHECK(states_hash[0] == 0 && states_hash[1] == 0 && states_hash[2] == 0, "another version's state turned a hack on");
+	invariants();
+}
+
 static void test_save_round_trip(void)
 {
 	put_str(HACKS, TWO_HACKS);
@@ -583,6 +621,8 @@ static const struct hc_test tests[] = {
 	{ "named_states_other_version", test_named_states_other_version, false },
 	{ "legacy_migrates", test_legacy_migrates, false },
 	{ "legacy_mismatch_kept", test_legacy_mismatch_kept, false },
+	{ "legacy_against_nand_list", test_legacy_against_nand_list, false },
+	{ "legacy_other_version_entry", test_legacy_other_version_entry, false },
 	{ "save_round_trip", test_save_round_trip, false },
 	{ "hacks_stats_fail", test_hacks_stats_fail, false },
 	{ "alloc_failure_sweep", test_alloc_failure_sweep, false },

@@ -442,39 +442,73 @@ static std::vector<std::string> _parseStateNames(const u8* data, u32 size)
 	return names;
 }
 
-static void _loadHackStates(void)
+static s8 _parseSystemHacks(StorageDevice source);
+
+//the names of the hacks that were on in the old states file. its positions belong to the hack list on NAND (hackshas.ini),
+//the one saved with it, whichever list is loaded now (the hacks menu reads the card's first)
+static bool _legacyStateNames(StorageDevice source, const u8* data, u32 size, std::vector<std::string>& names)
+{
+	std::vector<system_hack> nandHacks;
+	if (source == StorageDevice::NAND)
+		nandHacks = system_hacks;
+	else
+	{
+		std::vector<system_hack> shown;
+		std::vector<u8> shownStates;
+		shown.swap(system_hacks);
+		shownStates.swap(states_hash);
+		if (_parseSystemHacks(StorageDevice::NAND) != 0)
+			nandHacks.swap(system_hacks);
+		system_hacks.swap(shown);
+		states_hash.swap(shownStates);
+	}
+
+	if (size != nandHacks.size())
+	{
+		gprintf("LoadHacks : the old states file has %u states for %u hacks on NAND: all hacks are off", size, (u32)nandHacks.size());
+		return false;
+	}
+
+	//only the hacks for this System Menu: a state left on for another version must not turn on this version's hack of that name
+	const u32 sysver = GetSysMenuVersion();
+	for (u32 i = 0; i < size; i++)
+	{
+		const system_hack& hack = nandHacks[i];
+		if (data[i] && hack.masterID.length() == 0 && hack.min_version <= sysver && hack.max_version >= sysver)
+			names.push_back(hack.desc);
+	}
+	return true;
+}
+
+static void _loadHackStates(StorageDevice source)
 {
 	states_hash.assign(system_hacks.size(), 0);
 
 	bool found = false;
 	bool migrate = false;
 	u32 size = 0;
+	std::vector<std::string> names;
 	u8* data = _readNandFile(STATES_FILE, STATES_MAX_FILE_SIZE, found, size);
 	if (found)
 	{
-		const std::vector<std::string> names = (data != NULL) ? _parseStateNames(data, size) : std::vector<std::string>();
-		for (u32 i = 0; i < system_hacks.size(); i++)
-		{
-			if (std::find(names.begin(), names.end(), system_hacks[i].desc) != names.end())
-				states_hash[i] = 1;
-		}
+		if (data != NULL)
+			names = _parseStateNames(data, size);
 	}
 	else
 	{
-		//an older priiloader kept the states by position. they are only right for the hack list they were saved with,
-		//so they are used when the count matches (like it always did) and saved by name from then on
+		//an older priiloader kept the states by position: moved over by name once, then saved by name
 		data = _readNandFile(LEGACY_STATES_FILE, STATES_MAX_FILE_SIZE, found, size);
-		if (data != NULL && size == system_hacks.size())
-		{
-			for (u32 i = 0; i < size; i++)
-				states_hash[i] = data[i] ? 1 : 0;
-			migrate = true;
-		}
-		else if (found)
-			gprintf("LoadHacks : the old states file has %u states for %u hacks: all hacks are off", size, (u32)system_hacks.size());
+		if (data != NULL)
+			migrate = _legacyStateNames(source, data, size, names);
 	}
 	if (data != NULL)
 		mem_free(data);
+
+	for (u32 i = 0; i < system_hacks.size(); i++)
+	{
+		if (std::find(names.begin(), names.end(), system_hacks[i].desc) != names.end())
+			states_hash[i] = 1;
+	}
 
 	//hacks for another System Menu version are off, and so are master hacks: they are turned on when a hack requires one
 	const u32 sysver = GetSysMenuVersion();
@@ -558,7 +592,8 @@ s8 LoadSystemHacks(StorageDevice source)
 	return ret;
 }
 
-static s8 _loadSystemHacks(StorageDevice source)
+//reads and parses a hacks file into system_hacks, without the states. returns 0 when there is no usable file
+static s8 _parseSystemHacks(StorageDevice source)
 {
 	//system_hacks already loaded
 	if (system_hacks.size() || states_hash.size()) 
@@ -693,7 +728,13 @@ static s8 _loadSystemHacks(StorageDevice source)
 	_addOrRejectHack(new_hack);
 
 	mem_free(fileData);
+	return 1;
+}
 
-	_loadHackStates();
+static s8 _loadSystemHacks(StorageDevice source)
+{
+	if (_parseSystemHacks(source) == 0)
+		return 0;
+	_loadHackStates(source);
 	return 1;
 }
