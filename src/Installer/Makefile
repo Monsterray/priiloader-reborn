@@ -41,7 +41,7 @@ LDFLAGS	+=	-Wl,--wrap=wiiuse_init_cmd_queue
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project
 #---------------------------------------------------------------------------------
-LIBS	:=	-ldb -lwiiuse -lbte -logc -lfat
+LIBS	:=	-ldb -lwiiuse -lbte -lfat -logc
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing

@@ -29,6 +29,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 void* xfb = NULL;
 GXRModeObj* rmode;
 static bool _videoInit = false;
+//where CON_Init put the console in xfb, in pixels
+static int _consoleX = 0;
+static int _consoleY = 0;
 
 //Console height is the minimum height minus the first line (overscan)
 #define CONSOLE_HEIGHT		(480-32)
@@ -76,7 +79,11 @@ const static void _configureVideoMode(GXRModeObj* videoMode, bool initConsole)
 
 	// Initialise the console, required for printf
 	if(initConsole)
-		CON_Init(xfb,(rmode->viWidth + rmode->viXOrigin - CONSOLE_WIDTH) / 2, (rmode->viHeight + rmode->viYOrigin - CONSOLE_HEIGHT) / 2, CONSOLE_WIDTH, CONSOLE_HEIGHT, CONSOLE_WIDTH*VI_DISPLAY_PIX_SZ );
+	{
+		_consoleX = (rmode->viWidth + rmode->viXOrigin - CONSOLE_WIDTH) / 2;
+		_consoleY = (rmode->viHeight + rmode->viYOrigin - CONSOLE_HEIGHT) / 2;
+		CON_Init(xfb, _consoleX, _consoleY, CONSOLE_WIDTH, CONSOLE_HEIGHT, CONSOLE_WIDTH*VI_DISPLAY_PIX_SZ );
+	}
 
 	VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
 	VIDEO_SetNextFramebuffer(xfb);
@@ -87,6 +94,12 @@ const static void _configureVideoMode(GXRModeObj* videoMode, bool initConsole)
 		VIDEO_WaitVSync();
 
 	_videoInit = true;
+}
+
+void GetConsoleOrigin(int* x, int* y)
+{
+	*x = _consoleX;
+	*y = _consoleY;
 }
 
 void ShutdownVideo(void)

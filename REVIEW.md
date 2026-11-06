@@ -16,6 +16,14 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ## Findings
 
+### Installer: automatic mode and the Mist menu (2026-11-05)
+
+- `Installer.dol install|update|remove` runs that action with no buttons, saves `sd:/priiloader/installer_result.txt` and returns to the loader; an unknown argument is refused before any NAND write. `update` refuses when Priiloader isn't installed. `tests/wii/installer/run.py` drives it on the bench and checks the NAND afterwards. Logic in `src/Installer/include/menu_logic.h`, host test `tests/host/installer/test_menu.cpp`.
+- The menu: Mist theme (grey on black, a pale grey bar on the selected row), a band of static under the title, an occasional title flicker, and the row the bar leaves fading out over 24 frames (button 1 toggles the fade, as a test). Drawn with libogc 3.1's truecolor console escapes; the static goes straight into XFB. Not yet seen on a Wii.
+- The installer now links libfat (for the result file): `-lfat` has to come before `-logc`.
+- Balance Board black screen (f5b4cf0): libogc 3.1 leaves Bluetooth slots 3-5 without a wiiuse command queue; the Balance Board is slot 4. Priiloader and the installer link `src/Shared/wpadqueue.c` (from HBC reborn) with `--wrap=wiiuse_init_cmd_queue`. Checked in libogc 3.1.0's source (nothing frees the queue buffer) and the ELF (the call in `wiiuse_init` goes to the wrapper). Not yet confirmed on dev.
+- The IOS patch scan was briefly changed to apply each patch once (f5b4cf0) and reverted (6bf9438): libruntimeiospatch patches every match of the same fakesign patterns across IOS memory, so patching every site is known-good practice.
+
 ### Wii checks: HTTPS and the updater (2026-11-04)
 
 Run on two Wiis (dev 192.168.8.213 and lrwii 192.168.8.243, both from HBC, network and NAND reads only) with `tests/dolphin/tls_probe` and `tests/dolphin/update_probe` built with `NETLOG=1`. Jobs `20261104-214142-*`, `20261104-215059-2918a1`, `20261104-215818-*`.

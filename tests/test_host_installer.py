@@ -53,6 +53,23 @@ class HostInstallerTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 0, "rename_no_replace=%s\n%s" % (no_replace, out))
                 self.assertNotIn("FAIL", out)
 
+    def test_installer_menu_logic(self):
+        """src/Installer/include/menu_logic.h: the automatic mode's command line, the menu's highlight and fade."""
+        cxx = find_clang()
+        if cxx is None:
+            self.skipTest("clang++ not found")
+        inc_dir = os.environ.get("HC_INSTALLER_INC", os.path.join(SRC, "include"))
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = os.path.join(tmp, "menu_host.exe" if os.name == "nt" else "menu_host")
+            cmd = [cxx, "-std=c++17", "-g", "-Wall", "-Wextra", "-I", inc_dir,
+                   os.path.join(HOST, "test_menu.cpp"), "-o", exe]
+            build = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([exe], capture_output=True, text=True, timeout=120, cwd=tmp)
+            out = run.stdout + run.stderr
+            self.assertEqual(run.returncode, 0, out)
+            self.assertNotIn("FAIL", out)
+
 
 if __name__ == "__main__":
     unittest.main()

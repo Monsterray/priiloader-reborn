@@ -46,6 +46,8 @@ extern void *xfb;
 void InitVideo(void);
 void InitVideoWithConsole(void);
 void ShutdownVideo(void);
+//where the console (InitVideoWithConsole) starts in xfb, in pixels; 8x16 pixels per character
+void GetConsoleOrigin(int* x, int* y);
 void ConfigureVideoMode(GXRModeObj* videoMode);
 
 #endif

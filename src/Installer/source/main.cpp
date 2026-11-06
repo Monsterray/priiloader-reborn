@@ -27,6 +27,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <unistd.h>
 #include <gccore.h>
 #include <wiiuse/wpad.h>
+#include <fat.h>
+#include <sys/stat.h>
+#include <ogc/lwp_watchdog.h>
 
 //project includes
 #include "title.h"
@@ -36,6 +39,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "IOS.hpp"
 #include "Video.h"
 #include "vWii.h"
+#include "menu_logic.h"
 
 //rev version
 #include "gitrev.h"
@@ -47,6 +51,50 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "su_tik.h"
 
 static const u64 _targetTitleId = 0x0000000100000002LL;
+
+//Automatic mode: a command line argument (install, update or remove; see menu_logic.h) runs that action with no
+//buttons, writes the outcome to RESULT_FILE and returns to the loader. Reloading IOS drops the network, so the
+//SD card is how a script learns what happened. Without an argument the installer shows its menu as before.
+#define RESULT_DIR	"sd:/priiloader"
+#define RESULT_FILE	RESULT_DIR "/installer_result.txt"
+static bool _automatic = false;
+static std::string _automaticArgument;
+
+static void WriteResult(bool ok, const char* message)
+{
+	if (!fatInitDefault())
+	{
+		gprintf("no SD card for the result");
+		return;
+	}
+
+	//one line per field: the message without its line breaks
+	std::string oneLine;
+	for (const char* c = message; *c != '\0'; c++)
+	{
+		if (*c == '\r' || *c == '\n')
+		{
+			if (!oneLine.empty() && oneLine.back() != ' ')
+				oneLine += ' ';
+			continue;
+		}
+		oneLine += *c;
+	}
+	while (!oneLine.empty() && oneLine.back() == ' ')
+		oneLine.pop_back();
+
+	mkdir(RESULT_DIR, 0777);
+	FILE* file = fopen(RESULT_FILE, "wb");
+	if (file != NULL)
+	{
+		fprintf(file, "action=%s\nresult=%s\nmessage=%s\nversion=%d.%d.%d\nrev=0x%08x\n", _automaticArgument.c_str(),
+			ok ? "ok" : "error", oneLine.c_str(), VERSION.major, VERSION.minor, VERSION.patch, GIT_REV);
+		fclose(file);
+	}
+	else
+		gprintf("failed to write " RESULT_FILE);
+	fatUnmount("sd:");
+}
 
 bool UserYesNoStop()
 {
@@ -74,21 +122,43 @@ bool UserYesNoStop()
 	//it should never get here, but to kill that silly warning... :)
 	return false;
 }
+//The end of every run: the message, then back to the loader. In automatic mode the result goes to the SD card
+//and the installer returns by itself after 3 seconds; otherwise it waits for A.
+static void Finish(bool ok, const char* msg, va_list args)
+{
+	char text[4096];
+	vsnprintf(text, sizeof(text), msg, args);
+	printf("\x1b[0m\x1b[38;2;232;232;232m");
+	gprintf("%s -> %s", text, ok ? "done" : "aborting mission...");
+	if (_automatic)
+	{
+		WriteResult(ok, text);
+		printf("%s\nReturning to the loader in 3 seconds...\r\n", text);
+		sleep(3);
+	}
+	else
+	{
+		printf("%s\nPress A to exit back to loader...\r\n", text);
+		UserYesNoStop();
+	}
+	printf("exiting...\r\n");
+	printf("\x1b[0m\x1b[%d;%dm", 37, 1);
+	VIDEO_WaitVSync();
+	exit(0);
+}
+static void Done(const char* msg, ...)
+{
+	va_list args;
+	va_start(args, msg);
+	Finish(true, msg, args);
+	va_end(args);
+}
 void abort(const char* msg, ...)
 {
 	va_list args;
-	char text[4096];
-	va_start( args, msg );
-	strcpy( text + vsnprintf( text,4095,msg,args ),""); 
-	va_end( args );
-	printf("\x1b[%d;%dm", 36, 1);
-	gprintf("%s -> aborting mission...", text);
-	printf("%s\nPress A to exit back to loader...\r\n",text);
-	UserYesNoStop();
-	printf("exiting...\r\n");
-	printf("\x1b[%d;%dm", 37, 1);
-	VIDEO_WaitVSync();
-	exit(0);
+	va_start(args, msg);
+	Finish(false, msg, args);
+	va_end(args);
 }
 bool HaveNandPermissions( void )
 {
@@ -112,7 +182,148 @@ void ClearScreen()
 	VIDEO_WaitVSync();
 	printf("\x1b[2J");
 	fflush(stdout);
-	return;	
+	return;
+}
+
+//The menu, in the Mist theme: grey text on black, a pale grey bar under the selected row, a strip of static under
+//the title, and the row the bar leaves fading back to black (button 1 turns the fade off and on, to compare).
+//Console rows and columns count from 1; a character is 8x16 pixels.
+#define MENU_ROW		13
+#define MENU_COL		14
+#define MENU_WIDTH		52
+#define MENU_ITEMS		3
+#define TITLE_ROW		2
+#define STATIC_ROW		4
+#define STATIC_COL		5
+#define STATIC_COLS		72
+
+static void PrintGrey(int row, int col, u8 grey, const char* text)
+{
+	printf("\x1b[%d;%dH\x1b[0m\x1b[38;2;%u;%u;%um%s\x1b[0m", row, col, grey, grey, grey, text);
+}
+
+static void DrawMenuRow(int row, const char* text, MenuGrey grey)
+{
+	printf("\x1b[%d;%dH\x1b[48;2;%u;%u;%um\x1b[38;2;%u;%u;%um  %-*s\x1b[0m", row, MENU_COL, grey.bg, grey.bg, grey.bg,
+		grey.fg, grey.fg, grey.fg, MENU_WIDTH - 2, text);
+}
+
+//a band of snow 4 pixels high across the middle of a console row, straight into xfb (CON_Init draws there too)
+static void DrawStatic(int row, int col, int cols, u32& seed)
+{
+	int consoleX = 0;
+	int consoleY = 0;
+	GetConsoleOrigin(&consoleX, &consoleY);
+	u32* framebuffer = reinterpret_cast<u32*>(xfb);
+	const int pairsPerLine = rmode->fbWidth / 2;
+	const int top = consoleY + (row - 1) * 16 + 6;
+	const int left = (consoleX + (col - 1) * 8) / 2;
+	for (int y = top; y < top + 4; y++)
+	{
+		for (int x = left; x < left + cols * 4; x++)
+		{
+			const u32 y1 = StaticLuma(seed);
+			const u32 y2 = StaticLuma(seed);
+			framebuffer[y * pairsPerLine + x] = (y1 << 24) | (0x80 << 16) | (y2 << 8) | 0x80;
+		}
+	}
+}
+
+static InstallerAction RunMenu(bool isvWii)
+{
+	char title[96];
+#if RCVERSION > 0
+	snprintf(title, sizeof(title), "Priiloader v%d.%d.%dRC%d (r0x%08x) installer", VERSION.major, VERSION.minor,
+		VERSION.patch, VERSION.sub_version, GIT_REV);
+#else
+	snprintf(title, sizeof(title), "Priiloader v%d.%d.%d (r0x%08x) installer", VERSION.major, VERSION.minor,
+		VERSION.patch, GIT_REV);
+#endif
+	char iosLine[64];
+	snprintf(iosLine, sizeof(iosLine), "IOS %d rev %d%s", IOS_GetVersion(), IOS_GetRevision(), isvWii ? "  (vWii)" : "");
+
+	const char* items[MENU_ITEMS] = {
+		PriiloaderInstalled() ? "Update Priiloader" : "Install Priiloader",
+		"Remove Priiloader and restore the System Menu",
+		"Exit to the loader",
+	};
+	const InstallerAction actions[MENU_ITEMS] = { InstallerAction::Install, InstallerAction::Remove, InstallerAction::None };
+
+	ClearScreen();
+	PrintGrey(TITLE_ROW, STATIC_COL, 0xE8, title);
+	PrintGrey(TITLE_ROW + 1, STATIC_COL, 0x5A, iosLine);
+	PrintGrey(6, STATIC_COL, 0x6E, "This tool comes without any warranties. You install it at your own risk;");
+	PrintGrey(7, STATIC_COL, 0x6E, "the authors can't be held liable for any damage it might cause.");
+	PrintGrey(8, STATIC_COL, 0x6E, "If you don't agree with these terms, turn your Wii off.");
+	PrintGrey(MENU_ROW + MENU_ITEMS + 2, STATIC_COL, 0x5A,
+		"D-pad move   A select   + install   - remove   HOME exit   1 fade");
+
+	int selected = 0;
+	int fade[MENU_ITEMS];
+	for (int i = 0; i < MENU_ITEMS; i++)
+	{
+		fade[i] = i == selected ? 0 : MENU_FADE_FRAMES;
+		DrawMenuRow(MENU_ROW + i, items[i], MenuFadeGrey(fade[i]));
+	}
+
+	bool fadeOn = true;
+	u32 seed = 0x2F6E2B1u ^ gettick();
+	if (seed == 0)
+		seed = 1;
+	int titleDim = 0;
+	while (true)
+	{
+		VIDEO_WaitVSync();
+		WPAD_ScanPads();
+		PAD_ScanPads();
+		const u32 pDown = WPAD_ButtonsDown(0);
+		const u16 GCpDown = PAD_ButtonsDown(0);
+
+		//the old shortcuts still work
+		if (pDown & WPAD_BUTTON_PLUS)
+			return InstallerAction::Install;
+		if (pDown & WPAD_BUTTON_MINUS || GCpDown & PAD_BUTTON_Y)
+			return InstallerAction::Remove;
+		if (pDown & WPAD_BUTTON_HOME || GCpDown & PAD_BUTTON_START)
+			return InstallerAction::None;
+		if (pDown & WPAD_BUTTON_A || GCpDown & PAD_BUTTON_A)
+			return actions[selected];
+		if (pDown & WPAD_BUTTON_1)
+			fadeOn = !fadeOn;
+
+		int delta = 0;
+		if (pDown & WPAD_BUTTON_UP || GCpDown & PAD_BUTTON_UP)
+			delta = -1;
+		else if (pDown & WPAD_BUTTON_DOWN || GCpDown & PAD_BUTTON_DOWN)
+			delta = 1;
+		if (delta != 0)
+		{
+			const int previous = selected;
+			selected = MenuMove(selected, MENU_ITEMS, delta);
+			fade[previous] = fadeOn ? 1 : MENU_FADE_FRAMES;
+			fade[selected] = 0;
+			DrawMenuRow(MENU_ROW + previous, items[previous], MenuFadeGrey(fade[previous]));
+			DrawMenuRow(MENU_ROW + selected, items[selected], MenuFadeGrey(fade[selected]));
+		}
+
+		for (int i = 0; i < MENU_ITEMS; i++)
+		{
+			if (i == selected || fade[i] <= 0 || fade[i] >= MENU_FADE_FRAMES)
+				continue;
+			fade[i]++;
+			DrawMenuRow(MENU_ROW + i, items[i], MenuFadeGrey(fade[i]));
+		}
+
+		//the static, and now and then a flicker of the title
+		DrawStatic(STATIC_ROW, STATIC_COL, STATIC_COLS, seed);
+		if (titleDim == 0 && (seed & 0xFF) == 0)
+		{
+			titleDim = 4;
+			PrintGrey(TITLE_ROW, STATIC_COL, 0x9A, title);
+		}
+		else if (titleDim > 0 && --titleDim == 0)
+			PrintGrey(TITLE_ROW, STATIC_COL, 0xE8, title);
+	}
 }
 void InitializeSystem()
 {
@@ -183,6 +394,9 @@ void InitializeSystem()
 int main(int argc, char **argv)
 {
 	s32 ret;
+	_automatic = ParseAutoAction(argc, argv) != AutoAction::None;
+	if (_automatic)
+		_automaticArgument = argv[1];
 	CheckForGecko();
 	InitVideoWithConsole();
 	bool isvWii = CheckvWii();
@@ -226,7 +440,7 @@ int main(int argc, char **argv)
 
 	WPAD_Init();
 	PAD_Init();
-	
+
 	//did an error occur
 	if(!msg.empty())
 	{
@@ -234,37 +448,32 @@ int main(int argc, char **argv)
 		abort("%s", msg.c_str());
 	}
 
-	//wait a bit for the system to settle and have all unexpected events to have happened (if any)
-	sleep(3);
-
-	printf("\r\t         Press (+/A) to install or update Priiloader\r\n");
-	printf("\t    Press (-/Y) to remove Priiloader and restore system menu\r\n");
-	printf("\t    Press (HOME/Start) to chicken out and quit the installer!\r\n\r\n");
-	printf("\t                         Enjoy! DacoTaco \r\n");
-
 	InstallerAction action = InstallerAction::None;
-	while(1)
+	if (_automatic)
 	{
-		WPAD_ScanPads();
-		PAD_ScanPads();
-		u16 pDown = WPAD_ButtonsDown(0);
-		u16 GCpDown = PAD_ButtonsDown(0);
-
-		//install Priiloader
-		if (pDown & WPAD_BUTTON_PLUS || GCpDown & PAD_BUTTON_A)
+		switch (ParseAutoAction(argc, argv))
 		{
-			action = InstallerAction::Install;
-			break;
+			case AutoAction::Install:
+				action = InstallerAction::Install;
+				break;
+			case AutoAction::Update:
+				if (!PriiloaderInstalled())
+					abort("\r\nPriiloader not found: nothing to update\r\n");
+				action = InstallerAction::Install;
+				break;
+			case AutoAction::Remove:
+				action = InstallerAction::Remove;
+				break;
+			default:
+				abort("\r\nUnknown argument \"%s\": use install, update or remove\r\n", _automaticArgument.c_str());
 		}
-		//remove Priiloader
-		else if (pDown & WPAD_BUTTON_MINUS || GCpDown & PAD_BUTTON_Y )
-		{
-			action = InstallerAction::Remove;
-			break;
-		}
-		//Cancel
-		else if ( GCpDown & PAD_BUTTON_START || pDown & WPAD_BUTTON_HOME) 
-			break;
+		printf("\r\n\r\n\tAutomatic %s: no buttons needed.\r\n", _automaticArgument.c_str());
+	}
+	else
+	{
+		//wait a bit for the system to settle and have all unexpected events to have happened (if any)
+		sleep(3);
+		action = RunMenu(isvWii);
 	}
 
 	ClearScreen();
@@ -276,6 +485,8 @@ int main(int argc, char **argv)
 		{
 			case InstallerAction::Install:
 #if RCVERSION > 0
+				if (!_automatic)
+				{
 				printf("\x1b[%d;%dm", 33, 1);
 				printf("\nWARNING : ");
 				printf("\x1b[%d;%dm", 37, 1);
@@ -283,6 +494,7 @@ int main(int argc, char **argv)
 				sleep(1);
 				if(!UserYesNoStop())
 					abort("user cancelled");
+				}
 #endif
 				action = PriiloaderInstalled() ? InstallerAction::Update : InstallerAction::Install;
 				installMsg = action == InstallerAction::Update 
@@ -296,7 +508,7 @@ int main(int argc, char **argv)
 					abort("\npatching TMD error %d!\r\n",ret);
 
 				DeletePriiloaderFiles(action);
-				abort("\r\n%s\r\n", action == InstallerAction::Update ? "Update done!" : "Install done!");
+				Done("\r\n%s\r\n", action == InstallerAction::Update ? "Update done!" : "Install done!");
 				break;
 			case InstallerAction::Remove:
 				if(!PriiloaderInstalled())
@@ -307,7 +519,7 @@ int main(int argc, char **argv)
 				PatchTMD(action);
 				DeletePriiloaderFiles(action);
 				printf("Done!\r\n\r\n");
-				abort("Removal done.\r\n");
+				Done("Removal done.\r\n");
 				break;
 			case InstallerAction::None:
 			default:		
