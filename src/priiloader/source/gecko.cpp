@@ -72,8 +72,14 @@ static void __write_pending(FILE* fd)
 {
 	if (_headerDue)
 	{
-		char header[128];
-		const int length = snprintf(header, sizeof(header), "\r\n======== priiloader %s: log opened ========\r\n", GIT_REV_STR);
+		//the lines carry the time of day from the Wii's clock: the header adds its date, as the log spans many boots
+		char date[16] = "?";
+		const time_t now = time(0);
+		const struct tm* localtm = localtime(&now);
+		if (localtm != NULL)
+			strftime(date, sizeof(date), "%Y-%m-%d", localtm);
+		char header[160];
+		const int length = snprintf(header, sizeof(header), "\r\n======== priiloader %s: log opened %s (Wii clock) ========\r\n", GIT_REV_STR, date);
 		if (length > 0 && (size_t)length < sizeof(header))
 			fwrite(header, 1, length, fd);
 		_headerDue = false;
