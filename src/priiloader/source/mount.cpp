@@ -28,6 +28,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include <gccore.h>
 #include <ogc/mutex.h>
+#include <ogc/lwp_watchdog.h>
 
 #include "mount.h"
 #include "settings.h"
@@ -67,25 +68,51 @@ static mutex_t mountPointMutex;
 static bool _mutexInit = false;
 static lwp_t mnt_thread_handle = LWP_THREAD_NULL;
 static volatile bool quit_thread = false;
+static volatile bool thread_done = true;
 
 //this tells libdvm to not mount usb automatically, because they can be *very* slow in mounting...
 unsigned g_dvmOgcUsbMount = 0;
 
 void _pollMount(void)
 {
-	MutexLock mountLock(mountPointMutex);
-
-	//sd card removed?
-	if (_sdMounted && !__io_wiisd.isInserted())
 	{
-		fatUnmount(SD_UNMOUNTPOINT);
-		gprintf("SD: Unmounted");
-		__io_wiisd.shutdown();
-		_sdMounted = false;
+		MutexLock mountLock(mountPointMutex);
+
+		//sd card removed?
+		if (_sdMounted && !__io_wiisd.isInserted())
+		{
+			fatUnmount(SD_UNMOUNTPOINT);
+			gprintf("SD: Unmounted");
+			__io_wiisd.shutdown();
+			_sdMounted = false;
+		}
+
+		//the SD card first, before anything talks to USB: a USB drive that does not answer
+		//(left in the middle of a transfer by a reset: port power survives one) blocks the
+		//USB stack's startup for good. The log and the settings are on the card; with USB
+		//first, no line reached it and the autoboot never came (bench Wii, 2026-11-06).
+		if (!_sdMounted && __io_wiisd.startup() && __io_wiisd.isInserted() && !(notMountableFlag & StorageDevice::SD))
+		{
+			if (fatMountSimple(SD_MOUNTPOINT, &__io_wiisd))
+			{
+				_sdMounted = true;
+				gprintf("SD: Mounted");
+			}
+			else
+			{
+				notMountableFlag |= StorageDevice::SD;
+				gprintf("SD: Failed to mount");
+			}
+		}
 	}
 
-	//one startup call per poll: it talks to the USB stack
+	//one startup call per poll: it talks to the USB stack, and may never return. Outside the
+	//lock, and only the mount thread touches the USB state, so a stuck call stops only this thread.
 	const bool usbReady = __io_usbstorage.startup();
+	if (quit_thread)
+		return;
+
+	MutexLock mountLock(mountPointMutex);
 
 	//or usb removed?
 	if (_usbMounted && usbReady && !__io_usbstorage.isInserted())
@@ -93,21 +120,6 @@ void _pollMount(void)
 		fatUnmount(USB_UNMOUNTPOINT);
 		_usbMounted = false;
 		gprintf("USB: Unmounted");
-	}
-
-	//check sd it we can mount it?
-	if (!_sdMounted && __io_wiisd.startup() && __io_wiisd.isInserted() && !(notMountableFlag & StorageDevice::SD))
-	{
-		if (fatMountSimple(SD_MOUNTPOINT, &__io_wiisd))
-		{
-			_sdMounted = true;
-			gprintf("SD: Mounted");
-		}
-		else
-		{
-			notMountableFlag |= StorageDevice::SD;
-			gprintf("SD: Failed to mount");
-		}
 	}
 
 	//or can we mount usb?
@@ -184,6 +196,7 @@ void* _mountThread(void* args)
 			usleep(50000);
 	}
 
+	thread_done = true;
 	return 0;
 }
 void InitMounts(mountChangedCallback callback)
@@ -200,6 +213,7 @@ void InitMounts(mountChangedCallback callback)
 		_mutexInit = true;
 	}
 	quit_thread = false;
+	thread_done = false;
 	LWP_CreateThread(&mnt_thread_handle, _mountThread, NULL, NULL, 16 * 1024, 50);
 	_init = true;
 }
@@ -211,9 +225,17 @@ void ShutdownMounts()
 
 	//shutdown the mounting thread
 	//join before taking the mutex: the thread takes it on every poll, so holding it here can deadlock
+	//A thread stuck in the USB stack's startup (a drive that never answers) never ends: wait
+	//2 s at most, then leave it. It is outside the lock there, and a title launch reloads IOS.
 	quit_thread = true;
-	if (mnt_thread_handle != LWP_THREAD_NULL) 
+	const u64 waitStart = gettime();
+	while (!thread_done && ticks_to_millisecs(diff_ticks(waitStart, gettime())) < 2000)
+		usleep(10000);
+	const bool stuck = !thread_done;
+	if (mnt_thread_handle != LWP_THREAD_NULL && !stuck)
 		LWP_JoinThread(mnt_thread_handle, NULL);
+	if (stuck)
+		gprintf("mount: the USB poll did not return in 2 s; left behind");
 	mnt_thread_handle = LWP_THREAD_NULL;
 
 	MutexLock mountLock(mountPointMutex);
@@ -227,7 +249,8 @@ void ShutdownMounts()
 	if (_usbMounted)
 		fatUnmount(USB_UNMOUNTPOINT);
 	_usbMounted = false;
-	__io_usbstorage.shutdown();
+	if (!stuck)
+		__io_usbstorage.shutdown();	//it would wait on the same USB stack
 
 	__pollCallback = NULL;
 	notMountableFlag = 0;
