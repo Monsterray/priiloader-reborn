@@ -16,6 +16,11 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ## Findings
 
+### Dev Wii black screen: fixed (2026-11-05)
+
+- Every autoboot of a title (cold boot, return to the menu) went black until RESET. The boot log ("Dump gecko text", now with early lines, milliseconds and launch breadcrumbs) stopped after "drive done, video not up": `VideoRegionMatches` read `rmode->viTVMode` with `rmode` NULL (video not started), a fault in a libogc 3 build; libogc's handler reloaded into the HBC stub on RESET. Fixed in 6b5a986 (video format from `CONF_GetVideo` until video is up; `ShutdownVideo` no longer frees a missing framebuffer). Confirmed on dev: a cold boot and an exit to the System Menu both work. The Balance Board theory (f5b4cf0) was wrong for this Wii, but that wrap fixes a real libogc 3.1 crash and stays.
+- Installer progress text has colours (68f416e, `console_colors.h`).
+
 ### Installer: automatic mode and the Mist menu (2026-11-05)
 
 - `Installer.dol install|update|remove` runs that action with no buttons, saves `sd:/priiloader/installer_result.txt` and returns to the loader; an unknown argument is refused before any NAND write. `update` refuses when Priiloader isn't installed. `tests/wii/installer/run.py` drives it on the bench and checks the NAND afterwards. Logic in `src/Installer/include/menu_logic.h`, host test `tests/host/installer/test_menu.cpp`.
