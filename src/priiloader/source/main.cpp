@@ -325,46 +325,11 @@ handle_hacks_fail:
 					gprintf("hacks_hash.ini save error %d(%d)",ret,fail);
 				}
 				
-				ret = 0;
-				fd = ISFS_Open("/title/00000001/00000002/data/hacksh_s.ini", 1|2 );
-
-				if( fd >= 0 )
-				{
-					//File already exists, delete and recreate!
-					ISFS_Close( fd );
-					ret = ISFS_Delete("/title/00000001/00000002/data/hacksh_s.ini");
-					if(ret <0)
-					{
-						fail = 5;
-						goto handle_hacks_s_fail;
-					}
-				}
-				ret = ISFS_CreateFile("/title/00000001/00000002/data/hacksh_s.ini", 0, 3, 3, 3);
+				ret = SaveHackStates();
 				if(ret < 0)
 				{
-					fail = 6;
-					goto handle_hacks_s_fail;
-				}
-				fd = ISFS_Open("/title/00000001/00000002/data/hacksh_s.ini", 1|2 );
-				if( fd < 0 )
-				{
-					ret = fd;
-					fail=7;
-					goto handle_hacks_s_fail;
-				}
-				ret = ISFS_Write( fd, &states_hash[0], states_hash.size() );
-				if(ret <0)
-				{
-					fail = 8;
-					ISFS_Close(fd);
-					goto handle_hacks_s_fail;
-				}
-
-				ISFS_Close( fd );
-handle_hacks_s_fail:
-				if(fail > 0)
-				{
-					gprintf("hacksh_s.ini save error %d(%d)",ret,fail);
+					fail = 5;
+					gprintf("hack states save error %d",ret);
 				}
 
 				if( fail > 0 )

@@ -23,7 +23,9 @@ extern u32 g_sysmenu_version;
 extern std::string g_fat_path;
 
 #define HACKS "/title/00000001/00000002/data/hackshas.ini"
+/* the old states file, one byte per hack by position, and the one by name that replaced it */
 #define STATES "/title/00000001/00000002/data/hacksh_s.ini"
+#define NAMED_STATES "/title/00000001/00000002/data/hackstat.ini"
 
 static const char* TWO_HACKS =
 	"[First hack]\n"
@@ -88,9 +90,9 @@ static void test_states_missing(void)
 	put_str(HACKS, TWO_HACKS);
 	CHECK(LoadSystemHacks(StorageDevice::NAND) == 1, "load failed");
 	CHECK(system_hacks.size() == 2, "%u hacks", (unsigned)system_hacks.size());
-	size_t len = 0;
-	const uint8_t* f = sim_get(STATES, &len);
-	CHECK(f != NULL && len == 2, "the states file was not created (len %u)", (unsigned)len);
+	CHECK(states_hash[0] == 0 && states_hash[1] == 0, "hacks on without a states file");
+	/* nothing to save yet: the load writes no states file */
+	CHECK(sim_get(STATES, NULL) == NULL && sim_get(NAMED_STATES, NULL) == NULL, "a states file was written");
 	invariants();
 }
 
@@ -456,6 +458,116 @@ static void test_too_big_file(void)
 	invariants();
 }
 
+static const char* SWAPPED_HACKS =
+	"[Second hack]\n"
+	"minversion=480\n"
+	"maxversion=610\n"
+	"patch=0x60000000\n"
+	"offset=0x81000010\n"
+	"[First hack]\n"
+	"minversion=480\n"
+	"maxversion=610\n"
+	"patch=0x38000001,0x2c000000\n"
+	"offset=0x81000000\n";
+
+static std::string get_str(const char* path)
+{
+	size_t len = 0;
+	const uint8_t* f = sim_get(path, &len);
+	return f ? std::string(reinterpret_cast<const char*>(f), len) : std::string();
+}
+
+static void test_named_states(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	put_str(NAMED_STATES, "# a comment\r\n  Second hack  \r\n\r\nNo such hack\n");
+	CHECK(LoadSystemHacks(StorageDevice::NAND) == 1, "load failed");
+	CHECK(states_hash.size() == 2 && states_hash[0] == 0 && states_hash[1] == 1, "wrong states from names");
+	invariants();
+}
+
+/* the reason for names: a hack list in another order keeps the hack that was chosen, where positions moved it */
+static void test_named_states_reordered(void)
+{
+	put_str(HACKS, SWAPPED_HACKS);
+	put_str(NAMED_STATES, "First hack\n");
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(system_hacks.size() == 2 && system_hacks[1].desc == "First hack", "unexpected hack order");
+	CHECK(states_hash[0] == 0 && states_hash[1] == 1, "the reordered list turned on the wrong hack");
+	invariants();
+}
+
+static void test_named_states_win(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	const char st[2] = {1, 1};
+	sim_put(STATES, st, 2);
+	put_str(NAMED_STATES, "First hack\n");
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(states_hash[0] == 1 && states_hash[1] == 0, "the old file was read while the named one exists");
+	invariants();
+}
+
+static void test_named_states_empty(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	const char st[2] = {1, 1};
+	sim_put(STATES, st, 2);
+	sim_put(NAMED_STATES, "", 0);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(states_hash[0] == 0 && states_hash[1] == 0, "an empty named file must mean every hack is off");
+	invariants();
+}
+
+static void test_named_states_other_version(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	put_str(NAMED_STATES, "First hack\nSecond hack\n");
+	g_sysmenu_version = 700;
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(states_hash[0] == 0 && states_hash[1] == 0, "hacks for another version stayed on");
+	invariants();
+}
+
+static void test_legacy_migrates(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	const char st[2] = {0, 5};
+	sim_put(STATES, st, 2);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(states_hash[0] == 0 && states_hash[1] == 1, "the old states were not kept as 0/1");
+	std::string named = get_str(NAMED_STATES);
+	CHECK(named.find("Second hack\n") != std::string::npos && named.find("First hack") == std::string::npos, "migrated file: '%s'", named.c_str());
+	CHECK(sim_get(STATES, NULL) == NULL, "the old states file was kept");
+	invariants();
+}
+
+static void test_legacy_mismatch_kept(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	const char st[1] = {1};
+	sim_put(STATES, st, 1);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(states_hash[0] == 0 && states_hash[1] == 0, "states from a file of the wrong size");
+	CHECK(sim_get(NAMED_STATES, NULL) == NULL, "a named file was written from nothing");
+	invariants();
+}
+
+static void test_save_round_trip(void)
+{
+	put_str(HACKS, TWO_HACKS);
+	LoadSystemHacks(StorageDevice::NAND);
+	states_hash[0] = 1;
+	CHECK(SaveHackStates() == 0, "save failed");
+	CHECK(get_str(NAMED_STATES).find("First hack\n") != std::string::npos, "saved: '%s'", get_str(NAMED_STATES).c_str());
+
+	/* a new hack list with the same hacks in another order */
+	put_str(HACKS, SWAPPED_HACKS);
+	LoadSystemHacks(StorageDevice::NAND);
+	CHECK(states_hash[0] == 0 && states_hash[1] == 1, "the saved hack did not follow its name");
+	invariants();
+}
+
 static const struct hc_test tests[] = {
 	{ "valid_states", test_valid_states, false },
 	{ "states_for_other_version", test_states_for_other_version, false },
@@ -464,6 +576,14 @@ static const struct hc_test tests[] = {
 	{ "states_long", test_states_long, false },
 	{ "states_short_read", test_states_short_read, false },
 	{ "states_stats_fail", test_states_stats_fail, false },
+	{ "named_states", test_named_states, false },
+	{ "named_states_reordered", test_named_states_reordered, false },
+	{ "named_states_win", test_named_states_win, false },
+	{ "named_states_empty", test_named_states_empty, false },
+	{ "named_states_other_version", test_named_states_other_version, false },
+	{ "legacy_migrates", test_legacy_migrates, false },
+	{ "legacy_mismatch_kept", test_legacy_mismatch_kept, false },
+	{ "save_round_trip", test_save_round_trip, false },
 	{ "hacks_stats_fail", test_hacks_stats_fail, false },
 	{ "alloc_failure_sweep", test_alloc_failure_sweep, false },
 	{ "empty_file", test_empty_file, false },

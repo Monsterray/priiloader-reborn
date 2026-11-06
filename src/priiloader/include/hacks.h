@@ -48,6 +48,8 @@ extern std::vector<system_hack> system_hacks;
 extern std::vector<u8> states_hash;
 
 s8 LoadSystemHacks( StorageDevice source );
+//saves which hacks are on, by name. returns 0, or an ISFS error
+s32 SaveHackStates(void);
 s32 GetMasterHackIndexByID(const std::string& ID );
 
 #endif

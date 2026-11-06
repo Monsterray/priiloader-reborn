@@ -377,6 +377,170 @@ bool _addOrRejectHack(system_hack& hack)
 		return false;
 	}
 }
+//which hacks are on, one name per line. a hack list that changes order or size keeps the right hacks on
+#define STATES_FILE "/title/00000001/00000002/data/hackstat.ini"
+//the old states file: one byte per hack, by position in the hack list. only read to move its states to STATES_FILE
+#define LEGACY_STATES_FILE "/title/00000001/00000002/data/hacksh_s.ini"
+#define STATES_MAX_FILE_SIZE (64*1024)
+
+//reads a whole NAND file into a buffer with a NUL after the data. found says whether the file exists.
+//returns NULL when it is missing, empty, too big or cannot be read
+static u8* _readNandFile(const char* path, u32 maxSize, bool& found, u32& size)
+{
+	found = false;
+	size = 0;
+	s32 fd = ISFS_Open(path, 1);
+	if (fd < 0)
+		return NULL;
+	found = true;
+
+	STACK_ALIGN(fstats, status, 1, 32);
+	memset(status, 0, sizeof(fstats));
+	u8* buf = NULL;
+	if (ISFS_GetFileStats(fd, status) >= 0 && status->file_length > 0 && status->file_length <= maxSize)
+	{
+		const u32 length = status->file_length;
+		buf = static_cast<u8*>(mem_align(32, ALIGN32(length + 1)));
+		if (buf == NULL)
+			error = ERROR_MALLOC;
+		else
+		{
+			memset(buf, 0, ALIGN32(length + 1));
+			if (ISFS_Read(fd, buf, length) == static_cast<s32>(length))
+				size = length;
+			else
+			{
+				mem_free(buf);
+				buf = NULL;
+			}
+		}
+	}
+	ISFS_Close(fd);
+	return buf;
+}
+
+//the names in a states file: one per line, '#' starts a comment line (a hack name cannot hold a '#')
+static std::vector<std::string> _parseStateNames(const u8* data, u32 size)
+{
+	std::vector<std::string> names;
+	const char* text = reinterpret_cast<const char*>(data);
+	const u32 length = static_cast<u32>(strnlen(text, size));
+	u32 start = 0;
+	while (start < length)
+	{
+		u32 end = start;
+		while (end < length && text[end] != '\n')
+			end++;
+		std::string name(text + start, end - start);
+		if (!name.empty() && name.back() == '\r')
+			name.pop_back();
+		name = trim(name);
+		if (!name.empty() && name.front() != '#' && std::find(names.begin(), names.end(), name) == names.end())
+			names.push_back(name);
+		start = end + 1;
+	}
+	return names;
+}
+
+static void _loadHackStates(void)
+{
+	states_hash.assign(system_hacks.size(), 0);
+
+	bool found = false;
+	bool migrate = false;
+	u32 size = 0;
+	u8* data = _readNandFile(STATES_FILE, STATES_MAX_FILE_SIZE, found, size);
+	if (found)
+	{
+		const std::vector<std::string> names = (data != NULL) ? _parseStateNames(data, size) : std::vector<std::string>();
+		for (u32 i = 0; i < system_hacks.size(); i++)
+		{
+			if (std::find(names.begin(), names.end(), system_hacks[i].desc) != names.end())
+				states_hash[i] = 1;
+		}
+	}
+	else
+	{
+		//an older priiloader kept the states by position. they are only right for the hack list they were saved with,
+		//so they are used when the count matches (like it always did) and saved by name from then on
+		data = _readNandFile(LEGACY_STATES_FILE, STATES_MAX_FILE_SIZE, found, size);
+		if (data != NULL && size == system_hacks.size())
+		{
+			for (u32 i = 0; i < size; i++)
+				states_hash[i] = data[i] ? 1 : 0;
+			migrate = true;
+		}
+		else if (found)
+			gprintf("LoadHacks : the old states file has %u states for %u hacks: all hacks are off", size, (u32)system_hacks.size());
+	}
+	if (data != NULL)
+		mem_free(data);
+
+	//hacks for another System Menu version are off, and so are master hacks: they are turned on when a hack requires one
+	const u32 sysver = GetSysMenuVersion();
+	for (u32 i = 0; i < system_hacks.size(); i++)
+	{
+		if (system_hacks[i].masterID.length() > 0 ||
+			system_hacks[i].max_version < sysver ||
+			system_hacks[i].min_version > sysver)
+		{
+			states_hash[i] = 0;
+		}
+	}
+
+	if (migrate)
+	{
+		const s32 ret = SaveHackStates();
+		gprintf("LoadHacks : moved the hack states to hackstat.ini (%d)", ret);
+	}
+}
+
+s32 SaveHackStates(void)
+{
+	std::string text = "# priiloader: the System Menu hacks that are on, one name per line\n";
+	std::vector<std::string> saved;
+	const u32 count = std::min(states_hash.size(), system_hacks.size());
+	for (u32 i = 0; i < count; i++)
+	{
+		const std::string& name = system_hacks[i].desc;
+		if (states_hash[i] == 0 || system_hacks[i].masterID.length() > 0 || std::find(saved.begin(), saved.end(), name) != saved.end())
+			continue;
+		saved.push_back(name);
+		text += name + "\n";
+	}
+
+	const u32 length = static_cast<u32>(text.size());
+	u8* buf = static_cast<u8*>(mem_align(32, ALIGN32(length)));
+	if (buf == NULL)
+	{
+		error = ERROR_MALLOC;
+		return -1;
+	}
+	memcpy(buf, text.data(), length);
+
+	//a lost write leaves no states file, and then every hack is off: the safe way round
+	ISFS_Delete(STATES_FILE);
+	s32 ret = ISFS_CreateFile(STATES_FILE, 0, 3, 3, 3);
+	if (ret >= 0)
+	{
+		s32 fd = ISFS_Open(STATES_FILE, 2);
+		if (fd < 0)
+			ret = fd;
+		else
+		{
+			ret = ISFS_Write(fd, buf, length);
+			ISFS_Close(fd);
+			ret = (ret == static_cast<s32>(length)) ? 0 : (ret < 0 ? ret : -1);
+		}
+	}
+	mem_free(buf);
+
+	//the old file must not outlive the names: an older priiloader would read its positions against a newer hack list
+	if (ret == 0)
+		ISFS_Delete(LEGACY_STATES_FILE);
+	return ret;
+}
+
 static s8 _loadSystemHacks(StorageDevice source);
 s8 LoadSystemHacks(StorageDevice source)
 {
@@ -530,103 +694,6 @@ static s8 _loadSystemHacks(StorageDevice source)
 
 	mem_free(fileData);
 
-	//Load the states_hash
-	nand_file_handler = ISFS_Open("/title/00000001/00000002/data/hacksh_s.ini", 1|2);
-
-	if(nand_file_handler > 0)
-	{
-		STACK_ALIGN(fstats, status, 1, 32);
-		memset( status, 0, sizeof(fstats) );
-
-		if(ISFS_GetFileStats( nand_file_handler, status)<0)
-		{
-			ISFS_Close( nand_file_handler );
-			nand_file_handler = -1;
-			return 0;
-		}
-
-		//if the file is not the same size as the loaded hacks, we ignore the file
-		if(status->file_length == system_hacks.size())
-		{
-			u8 *fbuf = static_cast<u8 *>(mem_align( 32, ALIGN32(status->file_length) ));
-			if( fbuf == NULL )
-			{
-				error = ERROR_MALLOC;
-				ISFS_Close( nand_file_handler );
-				nand_file_handler = -1;
-				return 0;
-			}
-			memset( fbuf, 0, status->file_length );
-
-			if(ISFS_Read( nand_file_handler, fbuf, status->file_length )< (s32)status->file_length )
-			{
-				ISFS_Close( nand_file_handler );
-				nand_file_handler = -1;
-				mem_free(fbuf);
-				return 0;
-			}
-
-			for(u32 i = 0;i < status->file_length;i++)
-			{
-				states_hash.push_back(fbuf[i]);
-			}		
-
-			mem_free(fbuf);
-
-			/*	Disable all hacks that are either not for this version 
-				-OR- 
-				master hacks (as they will be re-enabled later if needed)*/
-			u32 sysver = GetSysMenuVersion();
-			for( u32 i=0; i < system_hacks.size(); ++i)
-			{
-				
-				if (system_hacks[i].masterID.length() > 0 || 
-					system_hacks[i].max_version < sysver || 
-					system_hacks[i].min_version > sysver)	
-				{
-					states_hash[i] = 0; 
-				}			
-			}
-		}
-	}
-
-	//the hack sizes don't match. reset the states
-	if(states_hash.size() != system_hacks.size())
-	{
-		states_hash.clear();
-		while(states_hash.size() != system_hacks.size())
-		{
-			states_hash.push_back(0);
-		}
-	}
-	
-	//if an actual ISFS error was given -> recreate
-	if (nand_file_handler < -1)
-	{
-		//delete file if it exists
-		ISFS_Delete("/title/00000001/00000002/data/hacksh_s.ini");
-
-		//file not found or not correct size - create a new one
-		nand_file_handler = ISFS_CreateFile("/title/00000001/00000002/data/hacksh_s.ini", 0, 3, 3, 3);
-		if(nand_file_handler < 0 )
-		{		
-			gprintf("LoadHacks : hacksh_s(states) could not be created. ISFS_CreateFile error %d", nand_file_handler);
-			return 0;
-		}
-
-		nand_file_handler = ISFS_Open("/title/00000001/00000002/data/hacksh_s.ini", 1|2 );
-		if( nand_file_handler < 0 )
-		{
-			gprintf("LoadHacks : hacksh_s(states) could not be loaded. ISFS_Open error %d", nand_file_handler);
-			return 0;
-		}
-
-		ISFS_Write( nand_file_handler, &states_hash[0], sizeof( u8 ) * system_hacks.size() );
-	}	
-
-	if(nand_file_handler >= 0)
-		ISFS_Close( nand_file_handler );
-	nand_file_handler = -1;
-
+	_loadHackStates();
 	return 1;
 }

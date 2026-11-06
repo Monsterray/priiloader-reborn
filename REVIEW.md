@@ -8,13 +8,17 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 | --- | --- | --- |
 | Installer (`src/Installer`) | backup copy, boot content write, TMD patch, each failure path | host test over a simulated NAND with injected failures |
 | Autoboot (`main.cpp`, `state.cpp`, `settings.cpp`) | `state.dat`, settings, `main.bin`/`main.nfo` to the launched DOL | host tests on the parsers; Dolphin boot |
-| System Menu hacks (`hacks.cpp`, `SystemMenu.cpp`) | `hacks_hash.ini`, `hacksh_s.ini` to the patched menu | host test on short and odd files |
+| System Menu hacks (`hacks.cpp`, `SystemMenu.cpp`) | `hacks_hash.ini`, `hackstat.ini` (was `hacksh_s.ini`) to the patched menu | host test on short and odd files |
 | Password (`password.cpp`) | `password.txt` to the check | host test |
 | Update (`HTTP_Parser.cpp`, `main.cpp`) | HTTP headers and body to the installed update | host test with canned responses |
 | Titles, disc (`titles.cpp`, `dvd.c`, `DiscContent.cpp`) | TMD, banner, disc header to the launch | host test where the parser can be split out |
 | Host tools (`tools/OpenDolBoot`, `tools/bootloader`) | DOL in, DOL/app out | byte compare of outputs across compilers |
 
 ## Findings
+
+### Hack states by name (2026-11-05)
+
+- Which hacks are on was kept in `hacksh_s.ini`, one byte per hack by position. A new `hacks_hash.ini` with the same count in another order turned on hacks nobody chose; a different count turned all of them off. They are now kept in `hackstat.ini`, the names of the hacks that are on, one per line (hacks of the same name are versions of one hack; none of them overlap in System Menu version). An old file whose size matches the hack list is moved over once and deleted; a new save deletes it too, so an older Priiloader never reads stale positions (it then starts with every hack off). Settings (`loader.ini`) stay a fixed-size binary record: it is read on every boot before video, and a size check is the simplest safe parse. Host tests in `test_hacks.cpp`. Not yet checked on a Wii.
 
 ### Dev Wii black screen: fixed (2026-11-05)
 

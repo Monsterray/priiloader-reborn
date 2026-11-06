@@ -209,6 +209,7 @@ void DeletePriiloaderFiles(InstallerAction action)
 		DeletePriiloaderFile(dataFolder + "hacks.ini", "Hacks.ini");
 		DeletePriiloaderFile(dataFolder + "hacksh_s.ini", "Hacksh_s.ini");
 		DeletePriiloaderFile(dataFolder + "hackshas.ini", "system_hacks");
+		DeletePriiloaderFile(dataFolder + "hackstat.ini", "Hackstat.ini");
 	}
 	if(main_bin)
 	{
