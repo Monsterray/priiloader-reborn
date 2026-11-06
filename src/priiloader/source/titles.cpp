@@ -58,9 +58,29 @@ const std::vector<std::shared_ptr<TitleDescription>> HBCTitles = {
 
 #define HW_VI1CFG 0x0d800018
 
+//The video format: the running mode's, or before InitVideo (an autoboot, a return to the menu) the console setting's.
+//rmode is NULL until InitVideo, and reading through it is a fault in a libogc 3 build: a black screen at every
+//autoboot of a title, until RESET reloads into the HBC stub.
+static u32 CurrentVideoFormat()
+{
+	if (rmode != NULL)
+		return VI_TVMODE_FMT(rmode->viTVMode);
+
+	switch (CONF_GetVideo())
+	{
+		case CONF_VIDEO_PAL:
+			return VI_PAL;
+		case CONF_VIDEO_MPAL:
+			return VI_MPAL;
+		case CONF_VIDEO_NTSC:
+		default:
+			return VI_NTSC;
+	}
+}
+
 bool VideoRegionMatches(TitleRegion region)
 {
-	switch (VI_TVMODE_FMT(rmode->viTVMode))
+	switch (CurrentVideoFormat())
 	{
 		case VI_NTSC:
 		case VI_DEBUG:
@@ -693,7 +713,7 @@ void TitleInformation::LaunchTitle()
 				case 'N':
 				case 'P':
 				case 'Q':
-					gprintf("LaunchTitle : (%08X\\%08X) Region Mismatch ! %d -> %d", TITLE_UPPER(_titleId), TITLE_LOWER(_titleId), VI_TVMODE_FMT(rmode->viTVMode), static_cast<int>(titleRegion));
+					gprintf("LaunchTitle : (%08X\\%08X) Region Mismatch ! %d -> %d", TITLE_UPPER(_titleId), TITLE_LOWER(_titleId), (int)CurrentVideoFormat(), static_cast<int>(titleRegion));
 					//calling SetVideoModeForTitle to force video mode here would inexplicably revert (correct) 480p to 480i sometimes; see issue #376
 					//instead we call SetupVideoInterfaceConfig later on to setup the VICFG bits and just shut down video				
 					ShutdownVideo();
@@ -707,6 +727,7 @@ void TitleInformation::LaunchTitle()
 			}
 		}
 
+		gprintf("LaunchTitle : region %d, video format %u, matches %d", static_cast<int>(titleRegion), CurrentVideoFormat(), regionMatches);
 		SetVideoInterfaceConfig(this);
 		gprintf("LaunchTitle : ES_LaunchTitle(%08X\\%08X), %u ticket views: unmounting, the log ends here if it works",
 			TITLE_UPPER(_titleId), TITLE_LOWER(_titleId), (unsigned)cnt);

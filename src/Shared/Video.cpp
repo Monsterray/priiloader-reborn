@@ -120,7 +120,10 @@ void ShutdownVideo(void)
 		_viReg[1] = 0x00;
 	}
 
-	free(MEM_K1_TO_K0(xfb));
+	//before InitVideo there is no framebuffer: MEM_K1_TO_K0(NULL) is not NULL, and freeing it corrupts the heap
+	if (xfb != NULL)
+		free(MEM_K1_TO_K0(xfb));
+	xfb = NULL;
 	_videoInit = false;
 }
 
