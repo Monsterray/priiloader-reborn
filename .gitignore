@@ -45,3 +45,6 @@ sd-key
 .runs/
 __pycache__/
 *.pyc
+
+#tools/make_sd.py output
+dist

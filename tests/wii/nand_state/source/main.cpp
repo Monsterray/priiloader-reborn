@@ -207,6 +207,27 @@ int main(int argc, char** argv)
 			size > 8 ? ini[8] : 0);
 		free(ini);
 	}
+
+	//the hacks that are on, by name: one report line per line of the file
+	u8* states = NULL;
+	size = read_file(DATA_DIR "/hackstat.ini", &states);
+	if (size < 0)
+		say("NANDSTATE: hackstat.ini: error %d\n", (int)size);
+	else
+	{
+		say("NANDSTATE: hackstat.ini %d bytes\n", (int)size);
+		char* text = reinterpret_cast<char*>(states);
+		s32 start = 0;
+		for (s32 i = 0; i <= size; i++)
+		{
+			if (i < size && text[i] != '\n')
+				continue;
+			if (i > start)
+				say("NANDSTATE: hackstat.ini: %.*s\n", (int)(i - start), text + start);
+			start = i + 1;
+		}
+		free(states);
+	}
 	list_dir("/tmp", false);
 	say("NANDSTATE: done\n");
 
