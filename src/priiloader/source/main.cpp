@@ -2684,6 +2684,12 @@ int main(int argc, char **argv)
 	if(SGetSetting(SETTING_DUMPGECKOTEXT) == 1)
 	{
 		InitMounts(_mountCallback);
+		//the log is wanted: give the mount thread up to 3 s for the card, so this boot's lines reach it before an
+		//autoboot unmounts it again (the lines wait in memory until then)
+		const u64 mountStart = gettime();
+		while (GetMountedFlags() <= 0 && ticks_to_millisecs(diff_ticks(mountStart, gettime())) < 3000)
+			usleep(10000);
+		gprintf("log: card mounted after %u ms (flags %d)", (unsigned)ticks_to_millisecs(diff_ticks(mountStart, gettime())), GetMountedFlags());
 	}
 
 	SetDumpDebug(SGetSetting(SETTING_DUMPGECKOTEXT));

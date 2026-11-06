@@ -37,13 +37,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 static u8 GeckoFound = 0;
 static u8 DumpDebug = 0;
 
-//Lines logged before the SD card is mounted (version, boot state, magic word...) wait here, and SetDumpDebug writes
-//them to prii.log first. Before, they were lost: the dump only starts once LoadSettings has read the setting.
-//Once SetDumpDebug has run the buffer is off for good.
-#define EARLY_LOG_SIZE 8192
-static char _earlyLog[EARLY_LOG_SIZE];
-static u32 _earlyLogLength = 0;
-static bool _earlyLogOn = true;
+//Lines logged while no SD card is mounted wait here: before LoadSettings has read the setting, while the mount
+//thread is still mounting the card, and while a title launch has it unmounted. The next line written to a mounted
+//card writes them first, after a header for the log. Turning the dump off drops them.
+#define PENDING_LOG_SIZE 8192
+static char _pendingLog[PENDING_LOG_SIZE];
+static u32 _pendingLength = 0;
+static bool _pendingOverflow = false;
+static bool _pendingOn = true;
+static bool _headerDue = true;
 //every line carries the milliseconds since priiloader's first line, to time each step of a boot
 static u64 _firstLineTicks = 0;
 
@@ -66,6 +68,27 @@ void CheckForGecko(void)
 	return;
 }
 
+static void __write_pending(FILE* fd)
+{
+	if (_headerDue)
+	{
+		char header[128];
+		const int length = snprintf(header, sizeof(header), "\r\n======== priiloader %s: log opened ========\r\n", GIT_REV_STR);
+		if (length > 0 && (size_t)length < sizeof(header))
+			fwrite(header, 1, length, fd);
+		_headerDue = false;
+	}
+	if (_pendingLength > 0)
+		fwrite(_pendingLog, 1, _pendingLength, fd);
+	if (_pendingOverflow)
+	{
+		const char full[] = "(log buffer was full while unmounted: some lines are missing)\r\n";
+		fwrite(full, 1, strlen(full), fd);
+	}
+	_pendingLength = 0;
+	_pendingOverflow = false;
+}
+
 static void __write_str(const char* str, const u32 len)
 {
 	if(GeckoFound)
@@ -73,27 +96,34 @@ static void __write_str(const char* str, const u32 len)
 		usb_sendbuffer( EXI_CHANNEL_1, str, len );
 		usb_flush(EXI_CHANNEL_1);
 	}
-	
+
 	if (DumpDebug > 0 && GetMountedFlags() > 0)
 	{
 		//opened and closed per line, so a hang or RESET loses nothing that was logged
 		FILE* fd = fopen(BuildPath("/prii.log").c_str(), "ab");
 		if(fd != NULL)
 		{
+			__write_pending(fd);
 			fwrite(str, 1, len, fd);
 			fclose(fd);
+			return;
 		}
 	}
-	else if (_earlyLogOn && _earlyLogLength + len <= EARLY_LOG_SIZE)
+
+	if (!_pendingOn)
+		return;
+	if (_pendingLength + len <= PENDING_LOG_SIZE)
 	{
-		memcpy(_earlyLog + _earlyLogLength, str, len);
-		_earlyLogLength += len;
+		memcpy(_pendingLog + _pendingLength, str, len);
+		_pendingLength += len;
 	}
+	else
+		_pendingOverflow = true;
 }
 
 void gprintf( const char *str, ... )
 {
-	if(!GeckoFound && !_earlyLogOn && (!DumpDebug || GetMountedFlags() <= 0))
+	if(!GeckoFound && !_pendingOn && (!DumpDebug || GetMountedFlags() <= 0))
 		return;
 
 	const u64 now = gettime();
@@ -179,41 +209,24 @@ void gprintf( const char *str, ... )
 void SetDumpDebug( u8 value )
 {
 	DumpDebug = value > 0 ? 1 : 0;
-	
-	//don't dump or no devices mounted?
-	if (!DumpDebug || GetMountedFlags() <= 0)
+	if (!DumpDebug)
 	{
-		_earlyLogOn = false;
-		_earlyLogLength = 0;
+		_pendingOn = false;
+		_pendingLength = 0;
+		_pendingOverflow = false;
 		return;
 	}
-	
-	//create file, or re-open: a header for this boot, then what was logged before the mount
+
+	//keep collecting until a card is mounted; write now if one is
+	_pendingOn = true;
+	_headerDue = true;
+	if (GetMountedFlags() <= 0)
+		return;
+
 	FILE* fd = fopen(BuildPath("/prii.log").c_str(), "ab");
 	if (fd != NULL)
 	{
-		char header[160];
-		const int headerLength = snprintf(header, sizeof(header),
-			"\r\n======== priiloader %s: boot log (%u bytes logged before the mount) ========\r\n", GIT_REV_STR,
-			(unsigned)_earlyLogLength);
-		if (headerLength > 0)
-			fwrite(header, 1, (size_t)headerLength < sizeof(header) ? (size_t)headerLength : sizeof(header) - 1, fd);
-		if (_earlyLogLength > 0)
-			fwrite(_earlyLog, 1, _earlyLogLength, fd);
-		if (_earlyLogLength > EARLY_LOG_SIZE - 256)
-		{
-			const char full[] = "(early log buffer full: some early lines are missing)\r\n";
-			fwrite(full, 1, strlen(full), fd);
-		}
+		__write_pending(fd);
 		fclose(fd);
 	}
-	else
-	{
-		//we failed. fuck this shit
-		DumpDebug = 0;
-	}
-	_earlyLogOn = false;
-	_earlyLogLength = 0;
-
-	return;
 }

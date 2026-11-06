@@ -712,10 +712,8 @@ void TitleInformation::LaunchTitle()
 			TITLE_UPPER(_titleId), TITLE_LOWER(_titleId), (unsigned)cnt);
 		ShutdownMounts();
 		const s32 launched = ES_LaunchTitle(_titleId, &views[0]);
-		//it came back: mount again (the mount thread needs a moment) so the log gets the error
+		//it came back: the line waits in memory, and the mount thread writes it once the card is back
 		InitMounts();
-		for (int wait = 0; wait < 100 && GetMountedFlags() <= 0; wait++)
-			usleep(10000);
 		gprintf("LaunchTitle : ES_LaunchTitle returned %d", launched);
 
 		//failed to launch title
