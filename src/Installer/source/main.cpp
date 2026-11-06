@@ -40,6 +40,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "Video.h"
 #include "vWii.h"
 #include "menu_logic.h"
+#include "console_colors.h"
 
 //rev version
 #include "gitrev.h"
@@ -128,21 +129,21 @@ static void Finish(bool ok, const char* msg, va_list args)
 {
 	char text[4096];
 	vsnprintf(text, sizeof(text), msg, args);
-	printf("\x1b[0m\x1b[38;2;232;232;232m");
+	printf("%s", ok ? COLOR_OK : COLOR_DANGER);
 	gprintf("%s -> %s", text, ok ? "done" : "aborting mission...");
 	if (_automatic)
 	{
 		WriteResult(ok, text);
-		printf("%s\nReturning to the loader in 3 seconds...\r\n", text);
+		printf("%s\n" COLOR_INFO "Returning to the loader in 3 seconds...\r\n", text);
 		sleep(3);
 	}
 	else
 	{
-		printf("%s\nPress A to exit back to loader...\r\n", text);
+		printf("%s\n" COLOR_INFO "Press A to exit back to loader...\r\n", text);
 		UserYesNoStop();
 	}
 	printf("exiting...\r\n");
-	printf("\x1b[0m\x1b[%d;%dm", 37, 1);
+	printf("\x1b[0m");
 	VIDEO_WaitVSync();
 	exit(0);
 }
@@ -477,7 +478,7 @@ int main(int argc, char **argv)
 	}
 
 	ClearScreen();
-	printf("IOS %d rev %d\t%s\r\n\r\n", IOS_GetVersion(), IOS_GetRevision(), isvWii ? "(vWii detected)" : "");
+	printf(COLOR_INFO "IOS %d rev %d\t%s\r\n\r\n" COLOR_STEP, IOS_GetVersion(), IOS_GetRevision(), isvWii ? "(vWii detected)" : "");
 	try
 	{
 		const char* installMsg;
@@ -487,9 +488,9 @@ int main(int argc, char **argv)
 #if RCVERSION > 0
 				if (!_automatic)
 				{
-				printf("\x1b[%d;%dm", 33, 1);
+				printf(COLOR_WARN);
 				printf("\nWARNING : ");
-				printf("\x1b[%d;%dm", 37, 1);
+				printf(COLOR_STEP);
 				printf("this is a Release Canidate. are you SURE you want to install this?\n+/A to confirm, Home/Start to abort\r\n");
 				sleep(1);
 				if(!UserYesNoStop())

@@ -32,6 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include "gecko.h"
 #include "title.h"
 #include "installer.h"
+#include "console_colors.h"
 #include "nand.h"
 #include "priiloader_app.h"
 
@@ -77,9 +78,9 @@ static NandPermissions GetTmdPermissions(void)
 	if(ret < 0 )
 	{
 		//attribute getting failed. returning to default
-		printf("\x1b[%d;%dm", 33, 1);
+		printf(COLOR_WARN);
 		printf("\nWARNING : failed to get file's permissions. using defaults\r\n");
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 		gprintf("permission failure on desination! error %d", ret);
 		gprintf("writing with max permissions");
 		filePermissions = {
@@ -101,9 +102,9 @@ static bool RestoreSystemMenu(const NandPermissions& appPermissions, bool restor
 	if(NandCopy(_copyBootAppPath, _originalBootAppPath, appPermissions) < 0)
 	{
 		restored = false;
-		printf("\x1b[%d;%dm", 33, 1);
+		printf(COLOR_DANGER);
 		printf("\nUNABLE TO RESTORE THE SYSTEM MENU APP!!!\nTHE BACKUP (%s) WAS KEPT.\r\n", _copyBootAppPath);
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 	}
 
 	if(restoreTmd && NandFileExists(_tmdBackupPath))
@@ -111,17 +112,17 @@ static bool RestoreSystemMenu(const NandPermissions& appPermissions, bool restor
 		if(NandCopy(_tmdBackupPath, _tmdPath, GetTmdPermissions()) < 0)
 		{
 			restored = false;
-			printf("\x1b[%d;%dm", 33, 1);
+			printf(COLOR_DANGER);
 			printf("\nUNABLE TO RESTORE THE SYSTEM MENU TMD!!!\nTHE BACKUP (%s) WAS KEPT.\r\n", _tmdBackupPath);
-			printf("\x1b[%d;%dm", 37, 1);
+			printf(COLOR_STEP);
 		}
 	}
 
 	if(!restored)
 	{
-		printf("\x1b[%d;%dm", 33, 1);
+		printf(COLOR_DANGER);
 		printf("THIS COULD BRICK THE WII SO PLEASE REINSTALL SYSTEM MENU\nWHEN RETURNING TO THE HOMEBREW CHANNEL!!!\r\n\r\n");
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 	}
 	return restored;
 }
@@ -136,27 +137,27 @@ s32 DeletePriiloaderFile(const std::string& pathFormat, const std::string& fileD
 	printf("%s: ", fileDescription.c_str());
 	if(ret == -106)
 	{
-		printf("\x1b[%d;%dm", 32, 1);
+		printf(COLOR_INFO);
 		printf("Not found\r\n");
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 	}
 	else if(ret == -102)
 	{
-		printf("\x1b[%d;%dm", 33, 1);
+		printf(COLOR_WARN);
 		printf("Error deleting file: access denied\r\n");
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 	}
 	else if (ret < 0)
 	{
-		printf("\x1b[%d;%dm", 33, 1);
+		printf(COLOR_WARN);
 		printf("Error deleting file. error %d\r\n",ret);
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 	}
 	else
 	{
-		printf("\x1b[%d;%dm", 32, 1);
+		printf(COLOR_OK);
 		printf("Deleted\r\n");
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 	}
 
 	return ret;
@@ -364,7 +365,7 @@ s32 RemovePriiloader(void)
 		if(ret < 0)
 			throw "Failed to restore System Menu";
 
-		printf("Done!\r\n");
+		printf(COLOR_OK "Done!\r\n" COLOR_STEP);
 		//the System Menu copy (and on vWii the Priiloader content) stay until PatchTMD restored the TMD: if that fails,
 		//the TMD still wants Priiloader's hash and the copy is what the Wii can be repaired from
 	}
@@ -399,9 +400,9 @@ s32 RemovePriiloader(void)
 				: NandWrite(_originalBootAppPath, priiloader_app, priiloader_app_size, appPermissions);
 			if(putBack < 0)
 			{
-				printf("\x1b[%d;%dm", 33, 1);
+				printf(COLOR_DANGER);
 				printf("\nUNABLE TO PUT BACK THE BOOT CONTENT!!!\nTHE SYSTEM MENU COPY (%s) WAS KEPT.\r\n", _copyBootAppPath);
-				printf("\x1b[%d;%dm", 37, 1);
+				printf(COLOR_STEP);
 			}
 		}
 		throw errorMsg;
@@ -433,7 +434,7 @@ s32 WritePriiloader(InstallerAction action)
 		}
 
 		gprintf("Moved System Menu App");
-		printf("Done!\r\n");
+		printf(COLOR_OK "Done!\r\n" COLOR_STEP);
 	}
 
 	//sys_menu app moved. lets write priiloader
@@ -466,7 +467,7 @@ s32 WritePriiloader(InstallerAction action)
 				}
 
 				gprintf("Priiloader app written.");
-				printf("Done!\r\n");
+				printf(COLOR_OK "Done!\r\n" COLOR_STEP);
 				continue;
 			}
 
@@ -500,7 +501,7 @@ s32 WritePriiloader(InstallerAction action)
 			}
 
 			gprintf("System Menu replaced.");
-			printf("Done!\r\n");
+			printf(COLOR_OK "Done!\r\n" COLOR_STEP);
 		}
 	}
 	else
@@ -533,7 +534,7 @@ s32 WritePriiloader(InstallerAction action)
 	}
 
 	gprintf("Priiloader Update Complete");
-	printf("Done!\r\n\r\n");
+	printf(COLOR_OK "Done!\r\n\r\n" COLOR_STEP);
 	return 1;
 }
 
@@ -549,7 +550,7 @@ s32 CopyTicket(void)
 	if (ret >= 0)
 	{
 		ISFS_Close(ret);
-		printf("Skipping copy of system menu ticket...\r\n");
+		printf(COLOR_INFO "Skipping copy of system menu ticket...\r\n" COLOR_STEP);
 		gprintf("ticket copy exists.");
 		return 1;
 	}
@@ -569,7 +570,7 @@ s32 CopyTicket(void)
 	if(ret < 0)
 		throw "Failed to make ticket copy!";
 	
-	printf("Done!\r\n");
+	printf(COLOR_OK "Done!\r\n" COLOR_STEP);
 	return 1;
 }
 
@@ -581,7 +582,7 @@ static void DeleteRemovedSystemMenuCopies(void)
 	{
 		printf("Deleting Priiloader app...");
 		ISFS_Delete(_vwiiAdditionalApp);
-		printf("Done!\r\n");
+		printf(COLOR_OK "Done!\r\n" COLOR_STEP);
 	}
 }
 
@@ -595,7 +596,7 @@ s32 PatchTMD( InstallerAction action )
 	bool backupSuspect = false; //the backup is there but not trustworthy: never restore from it
 	if(fd < 0 && action == InstallerAction::Remove)
 	{
-		printf("TMD backup not found. leaving TMD alone...\r\n");
+		printf(COLOR_INFO "TMD backup not found. leaving TMD alone...\r\n" COLOR_STEP);
 		DeleteRemovedSystemMenuCopies();
 		return 1;
 	}
@@ -621,9 +622,9 @@ s32 PatchTMD( InstallerAction action )
 			}
 			else
 			{
-				printf("\x1b[%d;%dm", 33, 1);
+				printf(COLOR_DANGER);
 				printf("UNABLE TO RESTORE THE SYSTEM MENU TMD!!!\n\nTHIS COULD BRICK THE WII SO PLEASE REINSTALL SYSTEM MENU (0x%04X)\nWHEN RETURNING TO THE HOMEBREW CHANNEL!!!\n\r\n", _smTmd->title_version);
-				printf("\x1b[%d;%dm", 37, 1);
+				printf(COLOR_STEP);
 				throw "TMD Restoration failed";
 			}
 
@@ -834,12 +835,12 @@ s32 PatchTMD( InstallerAction action )
 			ret = NandWrite(_tmdPath, _tmdBuffer, _tmdSize, filePermissions);
 			if(ret < 0)
 				throw "Failed to write TMD patch";
-			printf("done!\r\n");
+			printf(COLOR_OK "done!\r\n" COLOR_STEP);
 		}
 		else
 		{
 			gprintf("no TMD mods needed");
-			printf("no TMD modifications needed\r\n");
+			printf(COLOR_INFO "no TMD modifications needed\r\n" COLOR_STEP);
 		}
 	}
 	catch (const std::string& ex)
@@ -875,9 +876,9 @@ s32 PatchTMD( InstallerAction action )
 
 	if(!errorMsg.empty())
 	{
-		printf("\x1b[%d;%dm", 33, 1);
+		printf(COLOR_DANGER);
 		printf("UNABLE TO PATCH THE SYSTEM MENU TMD!!!\n\nTHIS COULD BRICK THE WII SO PLEASE REINSTALL SYSTEM MENU (v%d)\nWHEN RETURNING TO THE HOMEBREW CHANNEL!!!\n\r\n", _smTmd->title_version);
-		printf("\x1b[%d;%dm", 37, 1);
+		printf(COLOR_STEP);
 
 		//the boot content is already Priiloader's, so the original System Menu must come back as a whole: its app and
 		//its TMD. the backups (TMD backup, System Menu copy) are deleted only after both were restored.
@@ -889,9 +890,9 @@ s32 PatchTMD( InstallerAction action )
 		bool restored = false;
 		if(backupSuspect)
 		{
-			printf("\x1b[%d;%dm", 33, 1);
+			printf(COLOR_DANGER);
 			printf("THE TMD BACKUP (%s) IS NOT USABLE AND WAS KEPT.\r\n", _tmdBackupPath);
-			printf("\x1b[%d;%dm", 37, 1);
+			printf(COLOR_STEP);
 		}
 		else
 			restored = RestoreSystemMenu(appPermissions, true);
