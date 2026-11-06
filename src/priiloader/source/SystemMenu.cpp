@@ -431,7 +431,9 @@ void BootMainSysMenu( void )
 		if(states_hash.size() != system_hacks.size())
 			states_hash.assign(system_hacks.size(), 0);
 
-		Input_Shutdown(false);
+		//the System Menu starts in this IOS: a remote left connected never gives it a connect event, and then it never
+		//turns IR on (no pointer after Priiloader's menu). disconnect them, as for HBC, so they connect to it fresh
+		Input_Shutdown(true);
 		ShutdownMounts();
 		USB_Deinitialize();
 		gprintf("subsystems shutdown");

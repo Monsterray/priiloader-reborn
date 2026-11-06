@@ -2332,9 +2332,6 @@ void CheckForUpdate()
 
 		//we are dealing with a string, so play it safe
 		buffer[file_size-1] = 0;
-		const std::string newlineType = strpbrk(reinterpret_cast<const char*>(buffer) , "\r\n") 
-			? "\r\n"
-			: "\n";
 		u16 min_line = 0;
 		u16 max_line = VI_TVMODE_ISFMT(rmode->viTVMode, VI_NTSC) || CONF_GetEuRGB60() || CONF_GetProgressiveScan()
 			? 12
@@ -2342,9 +2339,11 @@ void CheckForUpdate()
 		redraw = 1;
 		std::vector<std::string> lines;
 		std::string_view stringView = reinterpret_cast<const char*>(buffer);
-		for (auto found = stringView.find(newlineType); found != std::string_view::npos; found = stringView.find(newlineType))
+		//lines end in \n or \r\n: split on \n and drop a \r before it (splitting on "\r\n" left the \n at the start of the next line)
+		for (auto found = stringView.find('\n'); found != std::string_view::npos; found = stringView.find('\n'))
 		{
-			lines.emplace_back(stringView, 0, found);
+			const size_t length = (found > 0 && stringView[found - 1] == '\r') ? found - 1 : found;
+			lines.emplace_back(stringView, 0, length);
 			stringView.remove_prefix(found + 1);
 		}
 

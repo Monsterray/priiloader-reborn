@@ -173,7 +173,9 @@ void Input_Shutdown( bool disconnectWPAD )
 			WPAD_Flush(i);
 			WPAD_Disconnect(i);
 		}
-	}	
+		//WPAD_Disconnect only queues the disconnect: give it time to go out before WPAD_Shutdown closes the stack
+		usleep(100000);
+	}
 
 	gprintf("Input_Shutdown(%d): WPAD_Shutdown", disconnectWPAD);
 	WPAD_Shutdown();
