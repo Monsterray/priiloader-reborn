@@ -171,7 +171,11 @@ post_build:
 	$(SILENTMSG) -----------------------------------------------
 	$(SILENTMSG) creating priiloader.app for installer
 	$(SILENTMSG)
-	$(SILENTCMD) $(OPENDOLBOOT) -a $(GITTAG) $(OUTPUT).dol ../Installer/data/priiloader.app
+	@rm -f ../Installer/data/priiloader.app
+#OpenDolBoot takes a plain version (no "v" as in our tags), and exits 0 when it fails: check that the app was made,
+#or the installer would keep an older one
+	$(SILENTCMD) $(OPENDOLBOOT) -a $(patsubst v%,%,$(GITTAG)) $(OUTPUT).dol ../Installer/data/priiloader.app
+	@test -s ../Installer/data/priiloader.app || (echo "OpenDolBoot did not make priiloader.app" && exit 1)
 
 #---------------------------------------------------------------------------------
 clean:
