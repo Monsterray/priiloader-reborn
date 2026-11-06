@@ -16,6 +16,16 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ## Findings
 
+### Release 0.10.1 and the road to 1.0.0 (2026-11-05)
+
+- v0.10.1 is released on GitHub (ffdad8d): `Priiloader_Update.dol`, the SD zip and `SHA256SUMS`, built by `tools/make_sd.py --release`. GitHub's digest equals the file. Checked on dev before publishing (automatic update, settings and hack states kept). It is the base for testing the update path to 1.0.0.
+- The build kept a stale `priiloader.app` when the tag had a "v": OpenDolBoot rejects "v0.10.1" and still exits 0. The Makefile now strips the "v" and fails when no app is written.
+- An old `hacksh_s.ini` is now read against the NAND hack list, whichever list is loaded (the hacks menu reads the card's first), and only for hacks of this System Menu version.
+- No pointer after the menu → System Menu: the remotes stayed connected in the same IOS, so the System Menu never saw a connect event (diagnosis from the code, not proven). `BootMainSysMenu` now disconnects them, like the HBC launch (5735e7b). Check on a Wii: menu → System Menu shows the hand cursor.
+- The changelog no longer starts each CRLF line with "\n", and LF text is no longer taken for CRLF (5735e7b).
+
+Left for 1.0.0: the attended Wii checks below (remove and reinstall, vWii, the GitHub update from 0.10.1 to a 1.0.0 release candidate with a wrong-digest check, HTTPS from a NAND boot and a wrong clock, autoboot keys, DOL autoboot, a retail disc on lrwii, updating lrwii from upstream 0.10.0); the two-rename install window (redesign); size.
+
 ### Hack states by name (2026-11-05)
 
 - Which hacks are on was kept in `hacksh_s.ini`, one byte per hack by position. A new `hacks_hash.ini` with the same count in another order turned on hacks nobody chose; a different count turned all of them off. They are now kept in `hackstat.ini`, the names of the hacks that are on, one per line (hacks of the same name are versions of one hack; none of them overlap in System Menu version). An old file whose size matches the hack list is moved over once and deleted; a new save deletes it too, so an older Priiloader never reads stale positions (it then starts with every hack off). Settings (`loader.ini`) stay a fixed-size binary record: it is read on every boot before video, and a size check is the simplest safe parse. Host tests in `test_hacks.cpp`. Checked on dev (7d6e17c): the first System Menu boot moved its 72-byte `hacksh_s.ini` to `hackstat.ini` (8 hacks on, log "moved the hack states to hackstat.ini (0)") and deleted the old file; `loader.ini` was kept. Open the hacks menu only after that first boot on an updated Wii: it reads the SD hack list, which may not match the old positions. lrwii still runs upstream 0.10.0.
