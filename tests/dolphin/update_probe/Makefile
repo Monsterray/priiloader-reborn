@@ -16,7 +16,8 @@ TLS		:= $(PRII)/tls
 MBEDTLS	:= $(ROOT)/src/third_party/mbedtls
 # NETLOG=1: a bench build (update_probe_netlog.dol) that also sends its output to hbc.py run, through
 # hbc-reborn's sdk/hbc_netlog.h (HBC_SDK)
-HBC_SDK	?= $(ROOT)/../hbc-reborn/sdk
+HBC_REBORN ?= $(ROOT)/../hbc-reborn
+HBC_SDK	?= $(HBC_REBORN)/sdk
 TARGET	:= update_probe$(if $(NETLOG),_netlog)
 BUILD	:= build$(if $(NETLOG),_netlog)
 
@@ -25,8 +26,8 @@ INC		:= -iquote $(PRII)/include -iquote $(SHARED) -iquote $(PRII)/../loader/incl
 CFLAGS	:= -g -O2 -Wall -Wextra $(MACHDEP) $(INC)
 CXXFLAGS:= $(CFLAGS)
 ifneq ($(NETLOG),)
-CFLAGS	+= -DPROBE_NETLOG -iquote $(HBC_SDK)
-CXXFLAGS+= -DPROBE_NETLOG -iquote $(HBC_SDK) -Wno-missing-field-initializers
+CFLAGS	+= -DPROBE_NETLOG -iquote $(HBC_SDK)/hbc_netlog
+CXXFLAGS+= -DPROBE_NETLOG -iquote $(HBC_SDK)/hbc_netlog -Wno-missing-field-initializers
 endif
 LDFLAGS	:= -g $(MACHDEP) -Wl,-Map,$(BUILD)/$(TARGET).map -Wl,--gc-sections
 LIBS	:= $(TLS)/build/libpriitls.a $(MBEDTLS)/build/libmbedtls.a -lfat -logc -lm

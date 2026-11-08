@@ -12,11 +12,12 @@ include $(DEVKITPPC)/wii_rules
 
 ROOT	:= $(CURDIR)/../../..
 SHARED	:= $(ROOT)/src/Shared
-HBC_SDK	?= $(ROOT)/../hbc-reborn/sdk
+HBC_REBORN ?= $(ROOT)/../hbc-reborn
+HBC_SDK	?= $(HBC_REBORN)/sdk
 TARGET	:= nand_state
 BUILD	:= build
 
-CXXFLAGS:= -g -O2 -Wall $(MACHDEP) -iquote $(SHARED) -iquote $(ROOT)/src/Installer/include -iquote $(HBC_SDK) -I$(LIBOGC_INC)
+CXXFLAGS:= -g -O2 -Wall $(MACHDEP) -iquote $(SHARED) -iquote $(ROOT)/src/Installer/include -iquote $(HBC_SDK)/hbc_netlog -I$(LIBOGC_INC)
 LDFLAGS	:= -g $(MACHDEP) -Wl,-Map,$(BUILD)/$(TARGET).map
 LIBS	:= -lfat -logc -lm
 OBJS	:= $(BUILD)/main.o $(BUILD)/IOS.o $(BUILD)/gecko.o
