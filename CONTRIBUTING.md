@@ -34,6 +34,7 @@ Keep `TMP` a POSIX path: a Windows path with backslashes breaks the build's `sed
 | Check | Command | Needs |
 | --- | --- | --- |
 | Line endings and `.gitattributes` coverage | `python -m unittest discover -s tests` | Python |
+| No workstation paths in tracked files (shared tools go through `tools/wii_paths.py`) | `tests/test_workstation_paths.py` (same command) | Python, git |
 | Static check (as upstream CI) | `cppcheck . --std=c99 --std=c++11 --enable=warning,performance,portability,style --suppress=unusedFunction --suppress=unusedStructMember -UDEBUG_MEM2_LEVEL` | cppcheck |
 | Host tests | not written yet (REVIEW.md, Next) | a C compiler |
 | Dolphin run | `python tools/dolphin_run.py src/priiloader/priiloader.dol --seconds 60` | Dolphin |
