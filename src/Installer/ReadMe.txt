@@ -10,13 +10,22 @@ any previous version and can be installed over the top of an older install. Ther
 a removal option that will restore your system menu and clean all traces of Priiloader
 from your system.
 
+BEFORE YOU START: make a BootMii NAND backup. The installer writes the NAND.
+
 Usage:
 
-Press (+/A) to install or update Priiloader.
+Press (+/A) to install or update Priiloader. An update keeps your settings, hacks and password.
 Press (-/Y) to remove Priiloader and restore your system menu.
 Press (HOME/Start) to chicken out and quit the installer!
 
 To access Priiloader and configure it please hold (RESET) during the boot cycle.
+Priiloader can also update itself: use "Check For Update" in its menu.
+
+Without buttons: run the installer with the argument install, update or remove
+(for example from wiiload). The result goes to sd:/priiloader/installer_result.txt.
+
+If something goes wrong at boot, switch on "Dump Gecko output" in Priiloader's
+settings and look at sd:/prii.log.
 
 Requirements:
 
@@ -41,9 +50,10 @@ license to the package and if code was changed add a note what code was changed 
 Kudos:
 
 Crediar (base source preloader 0.30)
-DacoTaco (additional mods)
+DacoTaco and BadUncle (Priiloader)
 Phpgeek (additional mods & installer)
 #wiidev (both of them)
+The priiloader-reborn contributors (https://github.com/Monsterray/priiloader-reborn)
 
 
-DacoTaco
+DacoTaco and the priiloader-reborn contributors

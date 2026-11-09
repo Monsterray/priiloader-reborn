@@ -18,6 +18,8 @@ Each finding records its trigger, its effect, the smallest safe fix, and the che
 
 ### Release 0.10.1 and the road to 1.0.0 (2026-11-05)
 
+1.0.0 released 2026-11-09 (see `CHANGELOG.md`). Confirmed on a real Wii that day: the update from 0.10.1 to 1.0.0-rc1 through Check For Update with the sha256 check; the Wii Remote pointer in the System Menu; a cold boot from standby (red light) and from idle (yellow light), both autobooting; RESET held at power on opens the menu. The list below is what was left when 0.10.1 came out.
+
 - v0.10.1 is released on GitHub (ffdad8d): `Priiloader_Update.dol`, the SD zip and `SHA256SUMS`, built by `tools/make_sd.py --release`. GitHub's digest equals the file. Checked on dev before publishing (automatic update, settings and hack states kept). It is the base for testing the update path to 1.0.0.
 - The build kept a stale `priiloader.app` when the tag had a "v": OpenDolBoot rejects "v0.10.1" and still exits 0. The Makefile now strips the "v" and fails when no app is written.
 - An old `hacksh_s.ini` is now read against the NAND hack list, whichever list is loaded (the hacks menu reads the card's first), and only for hacks of this System Menu version.

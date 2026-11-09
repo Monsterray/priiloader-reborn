@@ -36,8 +36,7 @@ The updater lists `GET /repos/<owner>/<repo>/releases?per_page=30` and chooses f
 | `GitHub answered HTTP 403` (or 429) | Rate limit: GitHub allows 60 unauthenticated API calls an hour per address. Wait and try again. Other codes (404 for a wrong repository name, 5xx for an outage) show as `GitHub answered HTTP <n>`. |
 | `the download was cut short`, `the reply is too big or of unknown length` | The download ended early, or it was chunked or larger than the limit (16 MB; the release list 1 MB). |
 | `the server is too slow` | One call took longer than its deadline (120 s; 600 s for the update DOL), however slowly the server kept sending. |
-| `GitHub answered HTTP 403` (or 429) | GitHub refused the request, usually its rate limit; the second line is GitHub's own message. |
-| `GitHub says: <message>` | The API answered with an error text. |
+| `GitHub says: <message>` | The API answered with an error text (for a 403 or 429, usually the rate limit). |
 | `the release list is not readable` | The reply was not the release list. |
 | `this release has no Priiloader_Update.dol` / `this release has no sha256 digest`, then `update refused` | The release was made without the asset, or GitHub did not give a digest. Fix the release. |
 | `the download does not match its sha256`, `update refused` | The file is not the one GitHub lists. Nothing is started. |
@@ -47,11 +46,13 @@ The updater lists `GET /repos/<owner>/<repo>/releases?per_page=30` and chooses f
 
 There is no CI release job yet. As the maintainer, from a clean `develop` checkout:
 
-1. Build the whole tree from the devkitPro shell (`make`) and run `python -m unittest discover -s tests`. The version comes from `git describe` and `src/Shared/version.h` (`VERSION_MAJOR`, `VERSION_MINOR`, `VERSION_PATCH`, `VERSION_RC`): set these to the release first and commit.
-2. Tag the commit `vX.Y.Z` (or `vX.Y.Z-rcN`) and push the tag. Build again so the Installer's `meta.xml` carries the tag (`git describe`), then run `python tools/make_sd.py --release`: `dist/release` holds `Priiloader_Update.dol` (the Installer built from that commit), the SD card zip and `SHA256SUMS`.
-3. Only `Priiloader_Update.dol` is read by the updater; other assets are ignored.
-4. On GitHub create the release from that tag: write the notes, tick "pre-release" for a release candidate only, and upload the files in `dist/release`. GitHub computes the digest on upload; check on the release page (or `gh api repos/Monsterray/priiloader-reborn/releases`, field `assets[].digest`) that it shows `sha256:...` and that it equals `sha256sum Priiloader_Update.dol`.
-5. Do not leave it as a draft: drafts are skipped.
-6. Check with a Wii that is not the only one you have: `Check For Update` offers it, the changelog reads right, and the install runs (attended, with a fresh BootMii NAND backup: the install writes the NAND).
+1. Set the version in `src/Shared/version.h` (`VERSION_MAJOR`, `VERSION_MINOR`, `VERSION_PATCH`, `VERSION_RC`; `VERSION_RC` is 0 for a release) and update `CHANGELOG.md`. Commit.
+2. Tag the commit and push the tag: `vX.Y.Z` for a release, `vX.Y.Z-rcN` (N from 1) for a release candidate. The version string comes from `git describe`.
+3. Delete `src/Shared/gitrev.h` and `src/Installer/META.XML`, so the build writes them again and the tag shows in the version and in the HBC `meta.xml`. Build the whole tree from the devkitPro shell (`make`). The Makefile strips the leading `v` from the tag before it calls OpenDolBoot, which rejects a tag that starts with `v`, and it fails when no `priiloader.app` is written.
+4. Run `python -m unittest discover -s tests`, then `python tools/make_sd.py --release`. `dist/release` holds `Priiloader_Update.dol` (the Installer built from that commit), `priiloader-reborn-VERSION-sd.zip` (the SD card files) and `SHA256SUMS`. Only `Priiloader_Update.dol` is read by the updater; other assets are ignored.
+5. On GitHub create the release from that tag: write the notes (they are the changelog the Wii shows, in plain ASCII), tick "pre-release" for a release candidate only, and upload the three files in `dist/release`. GitHub computes the digest on upload; check on the release page (or `gh api repos/Monsterray/priiloader-reborn/releases`, field `assets[].digest`) that it shows `sha256:...` and that it equals `sha256sum Priiloader_Update.dol`.
+6. Do not leave it as a draft: drafts are skipped.
+7. Check with a Wii that is not the only one you have: `Check For Update` offers it (turn on `Show RC Updates` for a candidate), the changelog reads right, and the install runs (attended, with a fresh BootMii NAND backup: the install writes the NAND).
+8. For a release (not a candidate), merge `develop` into `master`; `master` moves only at a release.
 
 Never re-upload an asset under a published release without checking the digest again: the updater trusts GitHub's digest, so it follows whatever file is there.

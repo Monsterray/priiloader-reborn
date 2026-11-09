@@ -10,7 +10,7 @@ description: Build, test, review and hardware-check priiloader-reborn. Use for a
 - Trace the path from input to output before changing code. The main paths:
   - Install: `src/Installer` copies the System Menu boot content to `1xxxxxxx.app`, writes `priiloader.app` over the boot content, and patches the TMD hash (vWii: a nandloader content instead).
   - Boot: the nandloader in `priiloader.app` starts priiloader, which reads `state.dat` and its settings, then autoboots (System Menu with hacks, a DOL from `main.bin`/`main.nfo`, HBC, BootMii) or shows its menu.
-  - System Menu boot: `SystemMenu.cpp` loads the copied boot content, applies hacks from `hacks_hash.ini` and `hacksh_s.ini`, and jumps through `src/loader`.
+  - System Menu boot: `SystemMenu.cpp` loads the copied boot content, applies hacks from `hacks_hash.ini` and `hackstat.ini` (by name; the old `hacksh_s.ini` is migrated), and jumps through `src/loader`.
 - Every file priiloader reads (NAND, SD, USB, disc, HTTP) is untrusted: a bad size must fall back to the System Menu, never crash.
 - Fix the smallest shared cause. Write the test first, at the lowest layer that shows the bug, marked `known_bug` until the fix lands.
 - Keep verified defects apart from ideas. Ideas go in `REVIEW.md` with evidence and a trigger.
@@ -43,7 +43,7 @@ python -m unittest discover -s tests
 ```
 
 - `tests/test_line_endings.py`: LF everywhere, `.gitattributes` covers every binary.
-- `tests/host/hostcheck.h` is the C runner for host tests: `CHECK`, `known_bug`, and `hc_hang()`. Host tests build project sources unchanged for the PC with a stand-in for the ISFS/IOS layer. None exist yet; the parsers (`hacks.cpp`, `password.cpp`, `main.nfo` in `main.cpp`, `HTTP_Parser.cpp`) and the installer's NAND sequence (`installer.cpp`, `nand.cpp` against a simulated NAND with injected failures) come first.
+- `tests/host/hostcheck.h` is the C runner for host tests: `CHECK`, `known_bug`, and `hc_hang()`. Host tests build project sources unchanged for the PC with a stand-in for the ISFS/IOS layer (`tests/test_host_*.py`, sources in `tests/host/`; they need clang++ and are skipped without it). They cover the parsers (`hacks.cpp`, settings, `password.cpp`, `main.nfo`, `HTTP_Parser.cpp`), the updater, TLS, and the installer's NAND sequence against a simulated NAND with injected failures.
 - cppcheck, as upstream CI runs it: `cppcheck . --std=c99 --std=c++11 --enable=warning,performance,portability,style --suppress=unusedFunction --suppress=unusedStructMember -UDEBUG_MEM2_LEVEL`. Style notes only today.
 
 ## Dolphin
@@ -52,7 +52,7 @@ python -m unittest discover -s tests
 python tools/dolphin_run.py src/priiloader/priiloader.dol --seconds 60 --expect 'TODO: a line priiloader logs at its menu'
 ```
 
-- Not set up yet: priiloader logs through USB Gecko (`gecko.cpp`), so pick the expect line once Dolphin's log shows it.
+- Dolphin tests (`tests/test_dolphin_*.py`) run only with `HC_DOLPHIN=1`; Dolphin is found by `tools/wii_paths.py` (`DOLPHIN`, `~/.wii-paths.json`). The `--expect` line for `priiloader.dol` is not chosen yet: priiloader logs through USB Gecko (`gecko.cpp`).
 - Booting the DOL directly does not give the installed title's NAND identity or the nandloader path. Dolphin cannot show what the installer does to a real System Menu.
 
 ## Wii bench
@@ -68,4 +68,4 @@ python tools/dolphin_run.py src/priiloader/priiloader.dol --seconds 60 --expect 
 ## Review and release
 
 - Report whether a check covered a host test, a build, a Dolphin run, or the bench Wii.
-- The version comes from `git describe` (`src/Shared/GitVersion.mk`) and is written into the nandloader header by OpenDolBoot `-a`.
+- The version comes from `git describe` (`src/Shared/GitVersion.mk`) and is written into the nandloader header by OpenDolBoot `-a`. The release procedure is in `docs/updates.md`; `CHANGELOG.md` gets an entry for each release.

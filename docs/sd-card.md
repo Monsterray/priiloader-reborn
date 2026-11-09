@@ -14,7 +14,7 @@ holds the installer, the hack list for the hacks menu, and a few optional files.
 | `apps/priiloader/hacks_hash.ini` | the hacks menu: Priiloader reads the hack list here first, and saves a copy to NAND | `src/priiloader/hacks_hash.ini` (the master list; the format is in `docs/HACKS.md`) |
 | `password.txt` | setting a password from Priiloader's Set Password menu (optional) | below |
 | `wii_secure.dol` | the DOL the password menu can install with the password (optional) | none |
-| `prii.log` | written by Priiloader when "Dump gecko text" is on | none: Priiloader writes it |
+| `prii.log` | the boot log, written by Priiloader when "Dump Gecko output" is on: a header for each boot with the Wii clock's date and time, then timestamped lines. Attach it to a bug report. | none: Priiloader writes it |
 | `priiloader/installer_result.txt` | written by the Installer when run with `install`, `update` or `remove` | none: the Installer writes it |
 
 `password.txt`: the first line is the password (letters and digits), the optional second line the name of the DOL to

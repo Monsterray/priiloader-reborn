@@ -2,6 +2,25 @@
 
 ## General questions:
 
+- **How do I open Priiloader's menu?**  
+Hold `RESET` while the Wii powers on. Pressing `B` on a Wii Remote or a GameCube pad at that moment also stops an autoboot.  
+With the autoboot off, Priiloader always shows its menu.
+
+- **How do I update Priiloader?**  
+Use **Check For Update** in Priiloader's menu, or run the installer again. Both keep your settings, hacks and password.  
+The updater reads the GitHub releases of priiloader-reborn over HTTPS and checks the sha256 digest GitHub lists. The Wii's clock must be right.  
+Release candidates show only when **Show RC Updates** is on. **Update from** can pick DacoTaco's server instead. See [updates.md](./updates.md).
+
+- **Priiloader does not start my Wii, or shows a black screen. What do I send?**  
+Switch on **Dump Gecko output** in the settings, reproduce it, and send `sd:/prii.log`. Each boot starts with a header with the Wii clock's date and time.  
+Say the Priiloader version (bottom left of its menu) and the System Menu version.
+
+- **A USB drive is plugged in and the Wii hangs at start.**  
+Fixed in 1.0.0: the SD card mounts first and USB starts only with the menu. If it still happens, send the log above.
+
+- **Where are my settings and hack choices kept?**  
+On the Wii's NAND, not on the SD card. See [sd-card.md](./sd-card.md) and [settings.ini](./settings.ini).
+
 - **Do Remove Deflicker and 480p hack have any effect on the games?**  
 Priiloader hacks only work with the System Menu.  
 Currently, the only Hack that has any direct impact on games is the **[Wiimmfi Patch v4]**
