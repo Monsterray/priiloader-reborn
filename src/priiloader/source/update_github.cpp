@@ -687,41 +687,88 @@ std::string gh_error_message(const char* json, size_t len, size_t width)
 	return gh_ascii_line(message, width);
 }
 
+//one line of release notes with its Markdown made plain: "### x" becomes "x", "**x**" and "`x`" become "x",
+//"[text](url)" becomes "text", and a "* " or "+ " list marker becomes "- "
+static std::string gh_plain_markdown(const std::string& in)
+{
+	size_t lead = 0;
+	while (lead < in.size() && in[lead] == ' ')
+		lead++;
+	std::string s = in.substr(lead);
+	if (!s.empty() && s[0] == '#')
+	{
+		size_t h = 0;
+		while (h < s.size() && s[h] == '#')
+			h++;
+		if (h == s.size() || s[h] == ' ')
+			s = s.substr(h < s.size() ? h + 1 : h);
+	}
+	else if (s.size() >= 2 && (s[0] == '*' || s[0] == '+') && s[1] == ' ')
+		s[0] = '-';
+	std::string out(lead, ' ');
+	for (size_t i = 0; i < s.size(); i++)
+	{
+		if (s[i] == '`' || (s[i] == '*' && i + 1 < s.size() && s[i + 1] == '*'))
+		{
+			if (s[i] == '*')
+				i++;
+			continue;
+		}
+		if (s[i] == '[')
+		{
+			size_t close = s.find(']', i + 1);
+			if (close != std::string::npos && close + 1 < s.size() && s[close + 1] == '(')
+			{
+				size_t end = s.find(')', close + 2);
+				if (end != std::string::npos)
+				{
+					out += gh_plain_markdown(s.substr(i + 1, close - i - 1));
+					i = end;
+					continue;
+				}
+			}
+		}
+		out.push_back(s[i]);
+	}
+	return out;
+}
+
+//how far the lines after the first of a paragraph are indented: under the text of a list item, else as the first
+static size_t gh_hanging_indent(const std::string& line, size_t width)
+{
+	size_t n = 0;
+	while (n < line.size() && line[n] == ' ')
+		n++;
+	if (line.size() >= n + 2 && line[n] == '-' && line[n + 1] == ' ')
+		n += 2;
+	else
+	{
+		size_t d = n;
+		while (d < line.size() && line[d] >= '0' && line[d] <= '9')
+			d++;
+		if (d > n && d + 1 < line.size() && line[d] == '.' && line[d + 1] == ' ')
+			n = d + 2;
+	}
+	return n > width / 2 ? width / 2 : n;
+}
+
 std::string gh_format_changelog(const std::string& tag, const std::string& body, size_t width)
 {
 	if (width < 20)
 		width = 20;
-	std::string out;
+	//the text as ASCII lines: a UTF-8 sequence becomes one '?', a tab a space, other control bytes go
+	std::vector<std::string> source;
 	std::string text = tag + "\n\n" + body;
-	std::string line;
-	const size_t maxLines = 400;
-	size_t lines = 0;
-	size_t i = 0;
-	bool truncated = false;
-	auto flush = [&]() {
-		out += line;
-		out += '\n';
-		line.clear();
-		lines++;
-	};
-	while (i < text.size())
+	std::string cur;
+	for (size_t i = 0; i < text.size(); )
 	{
-		if (lines >= maxLines)
-		{
-			truncated = true;
-			break;
-		}
 		unsigned char c = (unsigned char)text[i++];
-		if (c == '\r')
+		if (c == '\r' || c == '\n')
 		{
-			if (i < text.size() && text[i] == '\n')
+			if (c == '\r' && i < text.size() && text[i] == '\n')
 				i++;
-			flush();
-			continue;
-		}
-		if (c == '\n')
-		{
-			flush();
+			source.push_back(cur);
+			cur.clear();
 			continue;
 		}
 		if (c == '\t')
@@ -730,30 +777,93 @@ std::string gh_format_changelog(const std::string& tag, const std::string& body,
 			continue;
 		else if (c >= 0x80)
 		{
-			//one '?' for a whole UTF-8 sequence
 			while (i < text.size() && ((unsigned char)text[i] & 0xC0) == 0x80)
 				i++;
 			c = '?';
 		}
-		if (line.size() >= width)
-		{
-			//break at the last space when there is one in the second half
-			size_t sp = line.rfind(' ');
-			if (sp != std::string::npos && sp > width / 2)
-			{
-				std::string rest = line.substr(sp + 1);
-				line.resize(sp);
-				flush();
-				line = rest;
-			}
-			else
-				flush();
-		}
-		line.push_back((char)c);
+		cur.push_back((char)c);
 	}
-	if (!line.empty())
-		flush();
+	if (!cur.empty())
+		source.push_back(cur);
+
+	const size_t maxLines = 400;
+	std::vector<std::string> lines;
+	bool truncated = false;
+	auto emit = [&](const std::string& l) {
+		if (lines.size() >= maxLines)
+			truncated = true;
+		else
+			lines.push_back(l);
+	};
+	for (size_t s = 0; s < source.size() && !truncated; s++)
+	{
+		std::string line = gh_plain_markdown(source[s]);
+		while (!line.empty() && line[line.size() - 1] == ' ')
+			line.resize(line.size() - 1);
+		if (line.empty())
+		{
+			//one blank line between paragraphs, never two in a row
+			if (!lines.empty() && !lines.back().empty())
+				emit("");
+			continue;
+		}
+		const size_t indent = gh_hanging_indent(line, width);
+		//the first line keeps its marker; the words are wrapped after it
+		std::string out = line.substr(0, indent);
+		size_t pos = indent;
+		bool empty = true; //no word on out yet
+		while (pos < line.size() && !truncated)
+		{
+			while (pos < line.size() && line[pos] == ' ')
+				pos++;
+			if (pos >= line.size())
+				break;
+			size_t end = line.find(' ', pos);
+			if (end == std::string::npos)
+				end = line.size();
+			std::string word = line.substr(pos, end - pos);
+			pos = end;
+			if (!empty && out.size() + 1 + word.size() > width)
+			{
+				emit(out);
+				out.assign(indent, ' ');
+				empty = true;
+			}
+			//a word longer than a line is broken
+			while (out.size() + (empty ? 0 : 1) + word.size() > width)
+			{
+				if (!empty)
+				{
+					emit(out);
+					out.assign(indent, ' ');
+					empty = true;
+				}
+				size_t room = width - out.size();
+				out += word.substr(0, room);
+				word.erase(0, room);
+				emit(out);
+				out.assign(indent, ' ');
+			}
+			if (word.empty())
+				continue;
+			if (!empty)
+				out.push_back(' ');
+			out += word;
+			empty = false;
+		}
+		if (!empty)
+			emit(out);
+	}
+	while (!lines.empty() && lines.back().empty())
+		lines.pop_back();
+
+	std::string result;
+	for (size_t i = 0; i < lines.size(); i++)
+	{
+		result += lines[i];
+		result += '\n';
+	}
 	if (truncated)
-		out += "...\n";
-	return out;
+		result += "...\n";
+	return result;
 }

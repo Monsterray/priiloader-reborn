@@ -100,8 +100,13 @@ std::string gh_ascii_line(const std::string& text, size_t width);
 //"" when the body has no message. A body that was cut short still gives the message when it came before the cut.
 std::string gh_error_message(const char* json, size_t len, size_t width);
 
-//the release notes as plain screen lines: LF only, ASCII only (anything else becomes '?'), wrapped at width columns,
-//a heading line with the tag first
+//the columns of the changelog screen: text starts at x 16 and PrintString draws a character only while it fits on the
+//320-wide framebuffer (x + 7 < 318, 6 per character), so 50 characters show and the rest of a longer line is lost
+#define GH_CHANGELOG_WIDTH 50
+
+//the release notes as plain screen lines: LF only, ASCII only (anything else becomes '?'), a heading line with the tag
+//first. Markdown is made plain (headings, **bold**, `code`, [links](url); "* " lists become "- "), words are wrapped at
+//width columns, the lines after the first of a list item are indented under its text, and blank lines never repeat
 std::string gh_format_changelog(const std::string& tag, const std::string& body, size_t width);
 
 #endif

@@ -454,11 +454,99 @@ static void test_changelog(void)
 	out = gh_format_changelog("v1.0.0", "a\tb\x01\x1b[31mc\x7f", 62);
 	CHECK(out.find("a b[31mc\n") != std::string::npos, "controls: '%s'", out.c_str());
 	//a very long text is cut
-	out = gh_format_changelog("v1.0.0", std::string(200000, '\n'), 62);
+	std::string many;
+	for (int i = 0; i < 100000; i++)
+		many += "x\n";
+	out = gh_format_changelog("v1.0.0", many, 62);
 	CHECK(out.size() < 4000 && out.find("...") != std::string::npos, "cap: %d", (int)out.size());
 	//empty body, tiny width
 	out = gh_format_changelog("v1.0.0", "", 3);
 	CHECK(out == "v1.0.0\n\n" || out == "v1.0.0\n", "empty body '%s'", out.c_str());
+}
+
+//the lines of a formatted changelog
+static std::vector<std::string> changelog_lines(const std::string& out)
+{
+	std::vector<std::string> lines;
+	size_t start = 0;
+	while (start < out.size())
+	{
+		size_t e = out.find('\n', start);
+		if (e == std::string::npos)
+			e = out.size();
+		lines.push_back(out.substr(start, e - start));
+		start = e + 1;
+	}
+	return lines;
+}
+
+static void test_changelog_markdown(void)
+{
+	//the screen shows 50 columns
+	CHECK(GH_CHANGELOG_WIDTH == 50, "width %d", GH_CHANGELOG_WIDTH);
+	const std::string notes =
+		"priiloader-reborn 1.0.0: the first stable release of this fork of DacoTaco's Priiloader.\r\n\r\n"
+		"**Make a BootMii NAND backup before you install, update or remove Priiloader.**\r\n\r\n\r\n"
+		"### Install or update\r\n"
+		"- **New install:** unzip `priiloader-reborn-1.0.0-sd.zip` to the root of the SD card and run Priiloader.\r\n"
+		"* A star item that is long enough to wrap onto a second line of the screen.\r\n"
+		"12. A numbered item that is long enough to wrap onto a second line of the screen.\r\n"
+		"The full list is in [CHANGELOG.md](https://github.com/Monsterray/priiloader-reborn/blob/master/CHANGELOG.md).\r\n"
+		"100% done\r\n\r\n";
+	std::string out = gh_format_changelog("v1.0.0", notes, GH_CHANGELOG_WIDTH);
+	std::vector<std::string> lines = changelog_lines(out);
+	for (size_t i = 0; i < lines.size(); i++)
+	{
+		const std::string& l = lines[i];
+		CHECK(l.size() <= GH_CHANGELOG_WIDTH, "line %d has %d columns: '%s'", (int)i, (int)l.size(), l.c_str());
+		CHECK(l.empty() || l[l.size() - 1] != ' ', "trailing space: '%s'", l.c_str());
+		CHECK(!(i > 0 && l.empty() && lines[i - 1].empty()), "two blank lines at %d", (int)i);
+		CHECK(l.find("**") == std::string::npos && l.find('`') == std::string::npos && l.find("](") == std::string::npos
+			&& l.compare(0, 1, "#") != 0, "Markdown left: '%s'", l.c_str());
+	}
+	CHECK(!lines.empty() && !lines.back().empty(), "ends in a blank line");
+	std::string flat;
+	for (size_t i = 0; i < lines.size(); i++)
+	{
+		size_t a = lines[i].find_first_not_of(' ');
+		flat += (a == std::string::npos ? std::string() : lines[i].substr(a)) + " ";
+	}
+	CHECK(flat.find("Make a BootMii NAND backup before you install, update or remove Priiloader.") != std::string::npos, "bold: '%s'", out.c_str());
+	CHECK(out.find("\nInstall or update\n") != std::string::npos, "heading: '%s'", out.c_str());
+	CHECK(flat.find("The full list is in CHANGELOG.md.") != std::string::npos, "link: '%s'", out.c_str());
+	CHECK(out.find("\n100% done\n") != std::string::npos, "percent: '%s'", out.c_str());
+	CHECK(flat.find("New install: unzip priiloader-reborn-1.0.0-sd.zip to the root") != std::string::npos, "words: '%s'", out.c_str());
+	//list items: "- " and "* " start with "- ", numbered ones keep their number; the lines after the first are indented
+	//under the item's text
+	bool star = false, numbered = false;
+	for (size_t i = 0; i + 1 < lines.size(); i++)
+	{
+		if (lines[i].compare(0, 13, "- A star item") == 0)
+		{
+			star = true;
+			CHECK(lines[i + 1].compare(0, 2, "  ") == 0 && lines[i + 1][2] != ' ', "star item continues: '%s'", lines[i + 1].c_str());
+		}
+		if (lines[i].compare(0, 18, "12. A numbered ite") == 0)
+		{
+			numbered = true;
+			CHECK(lines[i + 1].compare(0, 4, "    ") == 0 && lines[i + 1][4] != ' ', "numbered item continues: '%s'", lines[i + 1].c_str());
+		}
+	}
+	CHECK(star && numbered, "list items: '%s'", out.c_str());
+	//a word longer than the room after the indent is broken, not lost, and stays inside the width
+	out = gh_format_changelog("v1.0.0", "- " + std::string(120, 'y'), 50);
+	lines = changelog_lines(out);
+	size_t ys = 0;
+	for (size_t i = 0; i < lines.size(); i++)
+	{
+		CHECK(lines[i].size() <= 50, "long word line of %d", (int)lines[i].size());
+		for (size_t k = 0; k < lines[i].size(); k++)
+			ys += lines[i][k] == 'y';
+	}
+	CHECK(ys == 120, "y lost: %d", (int)ys);
+	//a "#5", a lone "[x]", an unclosed link and a single '*' stay as they are
+	out = gh_format_changelog("v1.0.0", "#5 and [x] and [y](z and a*b", 50);
+	CHECK(out.find("#5 and [x] and [y](z and a*b\n") != std::string::npos, "plain text: '%s'", out.c_str());
 }
 
 static void reset(void)
@@ -467,6 +555,7 @@ static void reset(void)
 
 static const struct hc_test tests[] = {
 	{ "empty_list", test_empty_list, false },
+	{ "changelog_markdown", test_changelog_markdown, false },
 	{ "only_drafts", test_only_drafts, false },
 	{ "prerelease_flag", test_prerelease_flag, false },
 	{ "newest_wins_whatever_the_order", test_newest_wins_whatever_the_order, false },

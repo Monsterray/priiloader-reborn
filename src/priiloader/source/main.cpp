@@ -2314,7 +2314,7 @@ void CheckForUpdate()
 		{
 			//the release notes are in the release list already. the text ends in a newline, and one more is added:
 			//the code below turns the last byte into the terminator
-			const std::string text = gh_format_changelog(ghPick.tag, ghPick.body, 62) + "\n";
+			const std::string text = gh_format_changelog(ghPick.tag, ghPick.body, GH_CHANGELOG_WIDTH) + "\n";
 			buffer = static_cast<u8*>(mem_malloc(text.size()));
 			if(buffer == NULL)
 				throw "changelog error: out of memory";
@@ -2401,7 +2401,8 @@ void CheckForUpdate()
 				for(s16 i= min_line; i<=(min_line + max_line); i++ )
 				{
 					PrintFormat( 0, 16, 64 + ((i-min_line+1)*16), "                                                                ");
-					PrintFormat( 0, 16, 64 + ((i-min_line+1)*16), lines[i].c_str());
+					//the text is the server's: never a format string
+					PrintFormat( 0, 16, 64 + ((i-min_line+1)*16), "%s", lines[i].c_str());
 				}
 				redraw = false;
 			}
