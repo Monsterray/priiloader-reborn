@@ -4,7 +4,7 @@ Versions of priiloader-reborn, newest first. History before 0.10.1 is upstream's
 
 Back up the NAND with BootMii before you install or update. See [README.md](README.md).
 
-## 1.0.1 (not released yet)
+## 1.0.1 (2026-11-10)
 
 - The release notes on the update screen wrap at the 50 columns the screen shows. Lines were wrapped at 62, so the end of most lines was cut off.
 - Words are no longer split where a space could break the line, list items are indented under their text, and Markdown marks (`**`, backticks, `###`, links) are shown as plain text. Blank lines no longer repeat.
